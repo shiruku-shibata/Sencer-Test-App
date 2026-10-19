@@ -91,6 +91,77 @@ func stop() -> void:
 			_finish_trial()
 
 
+## 実行中のフェーズを、結果を確定せずに破棄する（切断・デバイス切替のとき用）。
+## それまでの静止測定・試行の結果はそのまま残る（実行中だった分だけ捨てる）。
+## baseline_finished / trial_finished / trial_discarded は出さない。phase_changed(IDLE) は出す。
+## 実行中でなければ何もしない（シグナルも出さない）。
+func cancel() -> void:
+	if _phase == Phase.IDLE:
+		return
+	_set_phase(Phase.IDLE)   # 実行中の集計（_acc）と平滑化の履歴はここで捨てる
+
+
+## 保存してあった測定結果（ThresholdProfile.measurement の形）から、静止測定と試行を復元する。
+## 復元後は recommend() / suggest_direction() / build_rule() がそのまま使える。
+##
+##   measurement: {"baseline": {軸: {mean, stddev, min, max, count}},
+##                 "trials":   [{軸: {max, min, peak_abs, count, duration_ms}}, ...]}
+##   軸のキーは int（SensorAxis.Id）と文字列（"gz" 等）のどちらでもよい。
+##
+## ・復元するのは「measurement に含まれる軸」と「set_axes() 済みの axes」の両方にある軸だけ。
+##   axes は変更しない（先に set_axes() しておくこと）。それ以外の軸・読めない値は黙って無視する。
+## ・現在の静止測定・試行の結果は、復元した内容で置き換わる（measurement に無ければ空になる）。
+## ・試行のうち、対象の軸が1つも読めなかったものは捨てる（サンプル0件の試行と同じ扱い）。
+## ・必須の値: 静止測定は mean/stddev/min/max/count、試行は max/min/count（すべて有限の数値、count >= 1、min <= max）。
+##   peak_abs が無ければ max/min から計算し、duration_ms が無ければ 0 とする。
+## ・実行中のフェーズがあれば cancel() してから復元する（phase_changed(IDLE) が出る）。
+##   それ以外のシグナル（baseline_finished / trial_finished）は出さない。復元後に画面側で表示を更新すること。
+## ・smoothing_window は変更しない。測定時と同じ平滑化で判定するなら、呼ぶ側で合わせる
+##   （ThresholdProfile.apply_measurement_to() は合わせてから復元する）。
+## 戻り値: 静止測定か試行を1つでも復元できたら true。
+func restore_measurement(measurement: Dictionary) -> bool:
+	cancel()
+	_baseline.clear()
+	_trials.clear()
+
+	var raw_baseline: Variant = measurement.get("baseline", {})
+	if typeof(raw_baseline) == TYPE_DICTIONARY:
+		var b: Dictionary = raw_baseline
+		for k in b.keys():
+			var axis := _axis_from_key(k)
+			if axis < 0 or typeof(b[k]) != TYPE_DICTIONARY:
+				continue
+			var stats := _restore_stats(b[k], ["mean", "stddev", "min", "max"])
+			if not stats.is_empty():
+				stats["stddev"] = maxf(0.0, float(stats["stddev"]))
+				_baseline[axis] = stats
+
+	var raw_trials: Variant = measurement.get("trials", [])
+	if typeof(raw_trials) == TYPE_ARRAY:
+		for t in raw_trials:
+			if typeof(t) != TYPE_DICTIONARY:
+				continue
+			var trial: Dictionary = t
+			var result: Dictionary = {}
+			for k in trial.keys():
+				var axis := _axis_from_key(k)
+				if axis < 0 or typeof(trial[k]) != TYPE_DICTIONARY:
+					continue
+				var r := _restore_stats(trial[k], ["max", "min"])
+				if r.is_empty():
+					continue
+				var given_peak: Variant = _finite_number(trial[k].get("peak_abs", null))
+				var computed_peak := maxf(absf(float(r["max"])), absf(float(r["min"])))
+				r["peak_abs"] = float(given_peak) if given_peak != null else computed_peak
+				var given_duration: Variant = _finite_number(trial[k].get("duration_ms", null))
+				r["duration_ms"] = maxi(0, int(given_duration)) if given_duration != null else 0
+				result[axis] = r
+			if not result.is_empty():
+				_trials.append(result)
+
+	return not _baseline.is_empty() or not _trials.is_empty()
+
+
 func feed(reading: SensorReading) -> void:
 	if _phase == Phase.IDLE or reading == null:
 		return
@@ -308,6 +379,47 @@ static func quality_label(quality: String) -> String:
 
 
 # ---------------------------------------------------------------- 内部
+
+## restore_measurement 用: 軸キー（int / "gz" 等）を、set_axes 済みの軸なら SensorAxis.Id に、そうでなければ -1 に。
+func _axis_from_key(k: Variant) -> int:
+	var axis := -1
+	match typeof(k):
+		TYPE_INT:
+			axis = int(k)
+		TYPE_FLOAT:
+			if float(int(k)) == float(k):
+				axis = int(k)
+		TYPE_STRING, TYPE_STRING_NAME:
+			axis = SensorAxis.from_key(String(k))
+	return axis if axes.has(axis) else -1
+
+
+## restore_measurement 用: 必須キー（required）と count を有限の数値として読み出す。読めなければ空。
+static func _restore_stats(src: Dictionary, required: Array) -> Dictionary:
+	var out: Dictionary = {}
+	for key in required:
+		var v: Variant = _finite_number(src.get(key, null))
+		if v == null:
+			return {}
+		out[key] = float(v)
+	var count: Variant = _finite_number(src.get("count", null))
+	if count == null or int(count) < 1:
+		return {}
+	out["count"] = int(count)
+	if out.has("min") and out.has("max") and float(out["min"]) > float(out["max"]):
+		return {}   # 壊れたデータ
+	return out
+
+
+## 有限の数値なら float、そうでなければ null。
+static func _finite_number(v: Variant) -> Variant:
+	if typeof(v) != TYPE_INT and typeof(v) != TYPE_FLOAT:
+		return null
+	var f := float(v)
+	if not is_finite(f):
+		return null
+	return f
+
 
 func _begin(p_phase: int, duration_ms: int) -> void:
 	stop()

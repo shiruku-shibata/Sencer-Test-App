@@ -50,6 +50,52 @@ func set_measurement_from(analyzer: ThresholdAnalyzer) -> void:
 	measurement = {"baseline": analyzer.baseline(), "trials": analyzer.trials()}
 
 
+## measurement を ThresholdAnalyzer に戻す（set_measurement_from の逆）。
+## analyzer.smoothing_window をこのプロファイルの smoothing_window に合わせてから restore_measurement() する。
+## analyzer の axes は変えないので、先に set_axes() しておくこと（measurement_axes() / rule_axes() が使える）。
+## 戻り値: 静止測定か試行を1つでも復元できたら true。
+func apply_measurement_to(analyzer: ThresholdAnalyzer) -> bool:
+	analyzer.smoothing_window = smoothing_window
+	return analyzer.restore_measurement(measurement)
+
+
+## measurement に含まれる軸（SensorAxis.ALL の順、重複なし）。
+func measurement_axes() -> Array[int]:
+	var found: Dictionary = {}
+	var maps: Array = []
+	if typeof(measurement.get("baseline")) == TYPE_DICTIONARY:
+		maps.append(measurement["baseline"])
+	if typeof(measurement.get("trials")) == TYPE_ARRAY:
+		for t in measurement["trials"]:
+			if typeof(t) == TYPE_DICTIONARY:
+				maps.append(t)
+	for m in maps:
+		for k in m.keys():
+			var axis := -1
+			if typeof(k) == TYPE_INT:
+				axis = k
+			elif typeof(k) == TYPE_STRING:
+				axis = SensorAxis.from_key(k)
+			found[axis] = true
+	return _in_axis_order(found)
+
+
+## ルールで使っている軸（SensorAxis.ALL の順、重複なし。無効なルールも含む）。
+func rule_axes() -> Array[int]:
+	var found: Dictionary = {}
+	for r in rules:
+		found[r.axis] = true
+	return _in_axis_order(found)
+
+
+static func _in_axis_order(found: Dictionary) -> Array[int]:
+	var out: Array[int] = []
+	for axis in SensorAxis.ALL:
+		if found.has(axis):
+			out.append(axis)
+	return out
+
+
 ## この設定と同じ判定をする ThresholdDetector を作る（ルールはコピーする）。
 func make_detector() -> ThresholdDetector:
 	var copies: Array = []
