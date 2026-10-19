@@ -12,6 +12,8 @@ extends VBoxContainer
 ##   - 測定・推奨値の計算は ThresholdAnalyzer、判定は ThresholdDetector に任せる（画面側で独自判定しない）。
 ##   - 波形表示にも AxisFilter で同じ平滑化をかけ、線と波形と判定が一致するようにする。
 ##   - 編集中のしきい値は _rules（axis -> ThresholdRule）が正。SpinBox・波形の線・Detector はここから作る。
+##     Detector は configure() で渡した ThresholdRule を参照し続けるので、値の編集はその場で反映される
+##     （configure() は判定回数もリセットするため、値の編集のたびには呼ばない）。
 
 const SETTINGS_KEY := "threshold"
 const DEFAULT_AXES: Array[int] = [SensorAxis.Id.ACCEL_MAG]
@@ -395,7 +397,7 @@ func _build_step4() -> PanelContainer:
 	_combine_selector.select(_combine_selector.get_item_index(_combine))
 	_combine_selector.item_selected.connect(func(index: int) -> void:
 		_combine = _combine_selector.get_item_id(index)
-		_configure_detector()
+		_detector.combine = _combine   # configure() は判定回数もリセットするので、ここでは値だけ変える
 	)
 	combine_row.add_child(_combine_selector)
 	box.add_child(combine_row)
@@ -539,7 +541,6 @@ func _rebuild_plots() -> void:
 		view.min_auto_range = SensorAxis.default_range(axis) * 0.2
 		view.unit_text = SensorAxis.unit(axis)
 		view.line_dragged.connect(_on_line_dragged)
-		view.line_drag_finished.connect(func(_id: Variant, _value: float) -> void: _configure_detector())
 		block.add_child(view)
 
 		_plots_box.add_child(block)
@@ -619,7 +620,6 @@ func _rebuild_rule_rows() -> void:
 		enabled.toggled.connect(func(pressed: bool) -> void:
 			rule.enabled = pressed
 			_update_lines(axis)
-			_configure_detector()
 		)
 		header.add_child(enabled)
 		var title := _axis_title(axis, false)
@@ -647,7 +647,6 @@ func _rebuild_rule_rows() -> void:
 		threshold.value_changed.connect(func(value: float) -> void:
 			rule.threshold = value
 			_update_lines(axis)
-			_configure_detector()
 		)
 		grid.add_child(threshold)
 
@@ -661,7 +660,6 @@ func _rebuild_rule_rows() -> void:
 		hysteresis.value_changed.connect(func(value: float) -> void:
 			rule.hysteresis = value
 			_update_lines(axis)
-			_configure_detector()
 		)
 		grid.add_child(hysteresis)
 
@@ -674,7 +672,6 @@ func _rebuild_rule_rows() -> void:
 		refractory.value = rule.refractory_ms
 		refractory.value_changed.connect(func(value: float) -> void:
 			rule.refractory_ms = int(value)
-			_configure_detector()
 		)
 		grid.add_child(refractory)
 		row.add_child(grid)
@@ -1267,7 +1264,6 @@ func _set_rule_direction(axis: int, direction: int) -> void:
 	rule.direction = direction
 	_sync_rule_controls(axis)
 	_update_lines(axis)
-	_configure_detector()
 
 
 func _on_line_dragged(id: Variant, value: float) -> void:
@@ -1280,15 +1276,18 @@ func _on_line_dragged(id: Variant, value: float) -> void:
 	var row: Dictionary = _rule_rows.get(axis, {})
 	if not row.is_empty():
 		row["threshold"].set_value_no_signal(rule.threshold)
-	# 判定は Detector が持つ同じ ThresholdRule を参照する。設定し直しは離したとき（line_drag_finished）
 	_update_lines(axis)
 
 
+## Detector を設定し直す（判定状態と判定回数もリセットされる）。
+## 軸・平滑化の変更や、ルールのオブジェクトを差し替えたとき（推奨値の適用・読み込み）だけ呼ぶ。
+## しきい値などの値の変更は、Detector が同じ ThresholdRule を参照しているので次のサンプルから反映される。
 func _configure_detector() -> void:
 	var rules: Array = []
 	for axis in _axes:
 		rules.append(_rules[axis])
 	_detector.configure(rules, _combine, _smoothing)
+	_markers.clear()   # 判定回数と一緒に、波形上の判定マーカーも消す
 
 
 func _update_all_lines() -> void:
@@ -1344,26 +1343,9 @@ func _build_profile() -> ThresholdProfile:
 		profile.rules.append(_rules[axis])
 	profile.combine = _combine
 	profile.smoothing_window = _smoothing
-	profile.measurement = _measurement_dict()
+	profile.set_measurement_from(_analyzer)
 	profile.created_at = Time.get_datetime_string_from_system()
 	return profile
-
-
-## 測定結果を軸キーの辞書にする（プロファイル保存用）。
-func _measurement_dict() -> Dictionary:
-	var baseline := {}
-	var stats := _analyzer.baseline()
-	for axis in stats.keys():
-		baseline[SensorAxis.key(int(axis))] = stats[axis]
-	var trials: Array = []
-	for trial in _analyzer.trials():
-		var entry := {}
-		for axis in trial.keys():
-			entry[SensorAxis.key(int(axis))] = trial[axis]
-		trials.append(entry)
-	if baseline.is_empty() and trials.is_empty():
-		return {}
-	return {"baseline": baseline, "trials": trials}
 
 
 func _on_save_pressed() -> void:
@@ -1452,7 +1434,8 @@ func _apply_profile(profile: ThresholdProfile, axes: Array[int], needs_reset: bo
 	_profile_bands.clear()
 	var baseline: Dictionary = profile.measurement.get("baseline", {}) if profile.measurement is Dictionary else {}
 	for axis_key in baseline.keys():
-		var axis := SensorAxis.from_key(str(axis_key))
+		# ThresholdProfile はメモリ上では軸を int（SensorAxis.Id）で持つ。念のため文字列キーも受け付ける
+		var axis: int = int(axis_key) if typeof(axis_key) == TYPE_INT else SensorAxis.from_key(str(axis_key))
 		if axis >= 0 and baseline[axis_key] is Dictionary:
 			_profile_bands[axis] = baseline[axis_key]
 
