@@ -5,7 +5,10 @@ extends Control
 ## 新しい画面を追加する場合は _create_screens() に数行足すだけでよい。
 ## 並び順: デバイス管理 / モニタリング / しきい値測定 / ログ管理 / マニュアル
 
-const SIDEBAR_WIDTH := 180
+const SIDEBAR_WIDTH := 200
+const SIDEBAR_PADDING := 12          ## サイドバーの内側の余白 [px]
+const BAR_PADDING_H := 14            ## 上下のバーの左右の余白（本文の余白とそろえる）
+const BAR_PADDING_V := 5
 
 var _manager: SensorManager
 var _logger := LoggingService.new()
@@ -48,14 +51,18 @@ func _build_layout() -> void:
 
 	var title := Label.new()
 	title.text = UIStrings.APP_TITLE
+	title.add_theme_font_size_override("font_size", 17)
 	sidebar.add_child(title)
 	var subtitle := Label.new()
 	subtitle.text = UIStrings.APP_SUBTITLE
 	subtitle.modulate = Color(1, 1, 1, 0.5)
+	subtitle.add_theme_font_size_override("font_size", 13)
 	sidebar.add_child(subtitle)
-	sidebar.add_child(HSeparator.new())
+	var separator := HSeparator.new()
+	separator.add_theme_constant_override("separation", 14)
+	sidebar.add_child(separator)
 
-	sidebar_panel.add_child(sidebar)
+	sidebar_panel.add_child(_padded(sidebar, SIDEBAR_PADDING, SIDEBAR_PADDING))
 	root.add_child(sidebar_panel)
 	_sidebar_box = sidebar
 
@@ -74,7 +81,7 @@ func _build_layout() -> void:
 	help_button.tooltip_text = UIStrings.TOOLTIP_HELP
 	help_button.pressed.connect(func() -> void: _show_screen(UIStrings.SCREEN_MANUAL))
 	topbar_box.add_child(help_button)
-	topbar.add_child(topbar_box)
+	topbar.add_child(_padded(topbar_box, BAR_PADDING_H, BAR_PADDING_V))
 	main.add_child(topbar)
 
 	_content = MarginContainer.new()
@@ -102,8 +109,19 @@ func _build_status_bar() -> PanelContainer:
 	_status_threshold = Label.new()
 	box.add_child(_status_threshold)
 
-	panel.add_child(box)
+	panel.add_child(_padded(box, BAR_PADDING_H, BAR_PADDING_V))
 	return panel
+
+
+## 子を左右 h・上下 v の余白で包む。
+static func _padded(child: Control, h: int, v: int) -> MarginContainer:
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", h)
+	margin.add_theme_constant_override("margin_right", h)
+	margin.add_theme_constant_override("margin_top", v)
+	margin.add_theme_constant_override("margin_bottom", v)
+	margin.add_child(child)
+	return margin
 
 
 func _create_screens() -> void:
