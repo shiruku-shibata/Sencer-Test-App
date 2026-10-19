@@ -71,7 +71,7 @@ func _build_layout() -> void:
 	topbar_box.add_child(_title_label)
 	var help_button := Button.new()
 	help_button.text = "?"
-	help_button.tooltip_text = "使い方を開く"
+	help_button.tooltip_text = UIStrings.TOOLTIP_HELP
 	help_button.pressed.connect(func() -> void: _show_screen(UIStrings.SCREEN_MANUAL))
 	topbar_box.add_child(help_button)
 	topbar.add_child(topbar_box)
@@ -154,16 +154,16 @@ func _show_screen(screen_name: String) -> void:
 
 func _process(_delta: float) -> void:
 	var connected := _manager.registry.connected_devices()
-	_status_devices.text = "接続: %d 台" % connected.size()
+	_status_devices.text = UIStrings.STATUS_DEVICES % connected.size()
 
 	var rate := 0.0
 	for device in connected:
 		rate = maxf(rate, device.rate_hz)
-	_status_rate.text = "受信: %.0f Hz" % rate
+	_status_rate.text = UIStrings.STATUS_RATE % rate
 
 	if _logger.is_recording():
-		_status_record.text = "記録中 %.1f s（%s）" % [_logger.elapsed_sec(), _monitor.recording_axes_text()]
+		_status_record.text = UIStrings.STATUS_RECORDING % [_logger.elapsed_sec(), _monitor.recording_axes_text()]
 	else:
-		_status_record.text = "記録: 停止中"
+		_status_record.text = UIStrings.STATUS_NOT_RECORDING
 
 	_status_threshold.text = _threshold.status_text()

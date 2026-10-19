@@ -41,6 +41,38 @@ const LABEL_MOVING_AVERAGE := "移動平均"
 const HINT_NO_DEVICE := "接続中のデバイスがありません。「デバイス管理」から接続してください。"
 const HINT_RENAME := "ニックネームを入力してEnterで保存"
 
+# ---------------------------------------------------------------- 全体（サイドバー・ステータスバー）
+
+const TOOLTIP_HELP := "使い方を開く"
+const STATUS_DEVICES := "接続: %d 台"
+const STATUS_RATE := "受信: %.0f Hz"
+const STATUS_RECORDING := "記録中 %.1f s（%s）"
+const STATUS_NOT_RECORDING := "記録: 停止中"
+
+# ---------------------------------------------------------------- デバイス管理（S1）
+
+const DEV_SCANNING := "スキャン中…"
+const DEV_CONNECTING := "接続処理中…"
+const DEV_ERROR_SUFFIX := "（エラー）"
+const DEV_CANCEL := "中止"
+const DEV_BLE_RESTART := "ブリッジ再起動"
+const DEV_BLE_RESTART_TIP := "BLEブリッジを起動し直します（bleak を入れた後や、調子が悪いとき）"
+const DEV_BLE_MANUAL := "手動起動で接続"
+const DEV_BLE_MANUAL_TIP := "アプリからブリッジを起動せず、ターミナルで起動したブリッジにつなぎます（macOS で Bluetooth 権限のエラーが出るとき）"
+const DEV_BLE_MANUAL_HINT := "ターミナルで次のコマンドを実行してください（実行したままにしておきます）:"
+const DEV_COPY := "コピー"
+const DEV_COPIED := "コピーしました"
+const DEV_BLE_NOT_READY := "BLE ブリッジの準備ができていません"
+const DEV_LABEL_DEVICE_NAME := "機器名"
+const DEV_LABEL_RSSI := "電波"
+
+# ---------------------------------------------------------------- ログ管理（S3）
+
+const LOGS_SAVE_DIR := "保存先: %s"
+const LOGS_COL_FILE := "ファイル名"
+const LOGS_COL_SIZE := "サイズ"
+const LOGS_EMPTY := "記録されたログはまだありません。"
+
 # ---------------------------------------------------------------- 軸選択
 
 const AXIS_GROUP_ACCEL := "加速度"

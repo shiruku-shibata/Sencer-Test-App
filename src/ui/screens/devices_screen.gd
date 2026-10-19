@@ -5,22 +5,6 @@ extends VBoxContainer
 ## 一覧は1秒ごとに更新されるが、行は作り直さずに中身だけ書き換える
 ## （作り直すとニックネーム入力中にフォーカスが外れてしまうため）。
 
-## この画面だけで使う文言（将来 UIStrings へ移す候補）
-const TEXT_SCANNING := "スキャン中…"
-const TEXT_CONNECTING := "接続処理中…"
-const TEXT_ERROR_SUFFIX := "（エラー）"
-const TEXT_CANCEL := "中止"
-const TEXT_BLE_RESTART := "ブリッジ再起動"
-const TEXT_BLE_RESTART_TIP := "BLEブリッジを起動し直します（bleak を入れた後や、調子が悪いとき）"
-const TEXT_BLE_MANUAL := "手動起動で接続"
-const TEXT_BLE_MANUAL_TIP := "アプリからブリッジを起動せず、ターミナルで起動したブリッジにつなぎます（macOS で Bluetooth 権限のエラーが出るとき）"
-const TEXT_BLE_MANUAL_HINT := "ターミナルで次のコマンドを実行してください（実行したままにしておきます）:"
-const TEXT_COPY := "コピー"
-const TEXT_COPIED := "コピーしました"
-const TEXT_BLE_NOT_READY := "BLE ブリッジの準備ができていません"
-const LABEL_DEVICE_NAME := "機器名"
-const LABEL_RSSI := "電波"
-
 const COLUMN_COUNT := 8
 const MODE_COLORS := {
 	SensorDevice.Mode.SERIAL: Color(0.55, 0.8, 1.0),
@@ -104,8 +88,9 @@ func _build() -> void:
 	_grid.columns = COLUMN_COUNT
 	_grid.add_theme_constant_override("h_separation", 14)
 	_grid.add_theme_constant_override("v_separation", 6)
-	for header in [UIStrings.LABEL_NICKNAME, UIStrings.LABEL_MODE, LABEL_DEVICE_NAME, UIStrings.LABEL_ID,
-			UIStrings.LABEL_STATE, LABEL_RSSI, UIStrings.LABEL_RATE, UIStrings.LABEL_ACTION]:
+	for header in [UIStrings.LABEL_NICKNAME, UIStrings.LABEL_MODE, UIStrings.DEV_LABEL_DEVICE_NAME,
+			UIStrings.LABEL_ID, UIStrings.LABEL_STATE, UIStrings.DEV_LABEL_RSSI, UIStrings.LABEL_RATE,
+			UIStrings.LABEL_ACTION]:
 		var label := _make_label(header)
 		label.modulate = COLOR_MUTED
 		_grid.add_child(label)
@@ -132,8 +117,8 @@ func _build_ble_panel() -> Control:
 	line.add_child(_ble_status)
 
 	_ble_restart = Button.new()
-	_ble_restart.text = TEXT_BLE_RESTART
-	_ble_restart.tooltip_text = TEXT_BLE_RESTART_TIP
+	_ble_restart.text = UIStrings.DEV_BLE_RESTART
+	_ble_restart.tooltip_text = UIStrings.DEV_BLE_RESTART_TIP
 	_ble_restart.pressed.connect(func() -> void:
 		var ble := _ble()
 		if ble != null:
@@ -143,8 +128,8 @@ func _build_ble_panel() -> Control:
 	line.add_child(_ble_restart)
 
 	_ble_manual = Button.new()
-	_ble_manual.text = TEXT_BLE_MANUAL
-	_ble_manual.tooltip_text = TEXT_BLE_MANUAL_TIP
+	_ble_manual.text = UIStrings.DEV_BLE_MANUAL
+	_ble_manual.tooltip_text = UIStrings.DEV_BLE_MANUAL_TIP
 	_ble_manual.pressed.connect(func() -> void:
 		var ble := _ble()
 		if ble != null:
@@ -155,7 +140,7 @@ func _build_ble_panel() -> Control:
 	box.add_child(line)
 
 	_manual_box = VBoxContainer.new()
-	var manual_hint := _make_label(TEXT_BLE_MANUAL_HINT)
+	var manual_hint := _make_label(UIStrings.DEV_BLE_MANUAL_HINT)
 	manual_hint.modulate = COLOR_MUTED
 	_manual_box.add_child(manual_hint)
 	var command_line := HBoxContainer.new()
@@ -164,10 +149,10 @@ func _build_ble_panel() -> Control:
 	_manual_command.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	command_line.add_child(_manual_command)
 	_copy_button = Button.new()
-	_copy_button.text = TEXT_COPY
+	_copy_button.text = UIStrings.DEV_COPY
 	_copy_button.pressed.connect(func() -> void:
 		DisplayServer.clipboard_set(_manual_command.text)
-		_copy_button.text = TEXT_COPIED
+		_copy_button.text = UIStrings.DEV_COPIED
 	)
 	command_line.add_child(_copy_button)
 	_manual_box.add_child(command_line)
@@ -185,7 +170,7 @@ func _ble() -> BleSensorProvider:
 func _refresh() -> void:
 	if _grid == null:
 		return
-	_scan_state.text = TEXT_SCANNING if _manager.is_scanning() else ""
+	_scan_state.text = UIStrings.DEV_SCANNING if _manager.is_scanning() else ""
 	_refresh_ble_panel()
 
 	# BLE 以外で使えない方式の注意書き（BLE は上の枠に出す）
@@ -220,7 +205,7 @@ func _refresh_ble_panel() -> void:
 		var command := ble.manual_command()
 		if _manual_command.text != command:
 			_manual_command.text = command
-			_copy_button.text = TEXT_COPY
+			_copy_button.text = UIStrings.DEV_COPY
 
 
 ## 行の集合を、レジストリのデバイス一覧に合わせる。既存の行は作り直さず並べ替えるだけ。
@@ -296,10 +281,10 @@ func _update_row(row: Row, device: SensorDevice) -> void:
 		row.state.text = UIStrings.LABEL_CONNECTED
 		row.state.modulate = COLOR_OK
 	elif connecting:
-		row.state.text = TEXT_CONNECTING
+		row.state.text = UIStrings.DEV_CONNECTING
 		row.state.modulate = COLOR_BUSY
 	elif not error.is_empty():
-		row.state.text = UIStrings.LABEL_DISCONNECTED + TEXT_ERROR_SUFFIX
+		row.state.text = UIStrings.LABEL_DISCONNECTED + UIStrings.DEV_ERROR_SUFFIX
 		row.state.modulate = COLOR_ERROR
 	else:
 		row.state.text = UIStrings.LABEL_DISCONNECTED
@@ -312,13 +297,13 @@ func _update_row(row: Row, device: SensorDevice) -> void:
 	if device.connected:
 		row.action.text = UIStrings.BTN_DISCONNECT
 	elif connecting:
-		row.action.text = TEXT_CANCEL
+		row.action.text = UIStrings.DEV_CANCEL
 	else:
 		row.action.text = UIStrings.BTN_CONNECT
 	var ble_not_ready := ble != null and not device.connected and not connecting \
 			and (not ble.is_ready() or not ble.is_available())
 	row.action.disabled = ble_not_ready
-	row.action.tooltip_text = TEXT_BLE_NOT_READY if ble_not_ready else ""
+	row.action.tooltip_text = UIStrings.DEV_BLE_NOT_READY if ble_not_ready else ""
 
 
 func _on_action(device_id: String) -> void:
