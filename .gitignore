@@ -4,3 +4,9 @@
 build/
 # macOS
 .DS_Store
+# Python（BLEブリッジ）
+.venv/
+__pycache__/
+*.pyc
+# PlatformIO
+.pio/
