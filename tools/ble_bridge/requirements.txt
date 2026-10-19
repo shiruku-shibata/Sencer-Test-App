@@ -1,0 +1,4 @@
+# BLE ブリッジの依存（ユーザー環境に pip で導入する。アプリには同梱しない）
+# bleak: MIT License  https://github.com/hbldh/bleak
+# 0.22.3 と 1.x の両方で動く API だけを使っている（Python 3.9 で入る最新は 1.1.x）。
+bleak>=0.22.3,<2

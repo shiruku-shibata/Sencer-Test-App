@@ -13,6 +13,7 @@ extends SensorProvider
 const BAUDRATE := 115200
 const STREAM_DIR := "user://serial_streams"
 const SUPPORTED_OS := ["macOS", "Linux", "FreeBSD", "NetBSD", "OpenBSD", "BSD"]
+const MAX_COMMAND_LENGTH := 64
 
 
 ## 1ポート分の受信状態。
@@ -105,6 +106,9 @@ func open_device(device_id: String) -> bool:
 		push_error("シリアル受信プロセスを起動できませんでした: %s" % device_id)
 		return false
 
+	# アプリが強制終了しても cat がポートを掴んだまま残らないよう、見張りを付ける
+	_start_orphan_guard(pid)
+
 	var stream := Stream.new()
 	stream.pid = pid
 	stream.stream_path = stream_path
@@ -116,12 +120,45 @@ func open_device(device_id: String) -> bool:
 func close_device(device_id: String) -> void:
 	if not _streams.has(device_id):
 		return
-	var stream: Stream = _streams[device_id]
-	if stream.pid > 0 and OS.is_process_running(stream.pid):
-		OS.kill(stream.pid)
-	DirAccess.remove_absolute(stream.stream_path)
+	_stop_stream(_streams[device_id])
 	_streams.erase(device_id)
 	connection_changed.emit(device_id, false)
+
+
+## アプリ終了時: すべての受信プロセス（cat）を止め、一時ファイルを消す。
+## 終了処理中なのでシグナルは出さない。
+func shutdown() -> void:
+	for device_id in _streams.keys():
+		_stop_stream(_streams[device_id])
+	_streams.clear()
+
+
+func _stop_stream(stream: Stream) -> void:
+	if stream.pid > 0 and OS.is_process_running(stream.pid):
+		OS.kill(stream.pid)
+	stream.pid = -1
+	DirAccess.remove_absolute(stream.stream_path)
+
+
+## 受信プロセスの見張り役（sh）を起動する。アプリが居なくなったら受信プロセスを止め、
+## 受信プロセスが先に終われば見張りも終わる。
+func _start_orphan_guard(reader_pid: int) -> void:
+	var script := "while kill -0 %d 2>/dev/null; do kill -0 %d 2>/dev/null || { kill %d; exit 0; }; sleep 1; done" % [
+		reader_pid, OS.get_process_id(), reader_pid
+	]
+	OS.create_process("/bin/sh", ["-c", script])
+
+
+## デバイスへ1行送る。ポートは受信用の cat が開いたままなので、
+## 別プロセス（sh の printf）で同じポートへ書き込む。完了は待たない（UIを止めないため）。
+func send_command(device_id: String, line: String) -> bool:
+	if not _streams.has(device_id):
+		return false
+	var text := line.strip_edges()
+	if text.is_empty() or text.contains("\n") or text.length() > MAX_COMMAND_LENGTH:
+		return false
+	var command := "printf '%%s\\n' %s > %s" % [_quote(text), _quote(device_id)]
+	return OS.create_process("/bin/sh", ["-c", command]) > 0
 
 
 func poll(_delta: float) -> void:

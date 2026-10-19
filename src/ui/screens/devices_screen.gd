@@ -1,12 +1,68 @@
 class_name DevicesScreen
 extends VBoxContainer
-## S1 デバイス管理画面。デバイスの探索・接続・切断・ニックネーム設定を行う。
+## S1 デバイス管理画面。デバイスの探索・接続・切断・ニックネーム設定と、BLE ブリッジの状態表示を行う。
+##
+## 一覧は1秒ごとに更新されるが、行は作り直さずに中身だけ書き換える
+## （作り直すとニックネーム入力中にフォーカスが外れてしまうため）。
 
-const COLUMN_COUNT := 6
+## この画面だけで使う文言（将来 UIStrings へ移す候補）
+const TEXT_SCANNING := "スキャン中…"
+const TEXT_CONNECTING := "接続処理中…"
+const TEXT_ERROR_SUFFIX := "（エラー）"
+const TEXT_CANCEL := "中止"
+const TEXT_BLE_RESTART := "ブリッジ再起動"
+const TEXT_BLE_RESTART_TIP := "BLEブリッジを起動し直します（bleak を入れた後や、調子が悪いとき）"
+const TEXT_BLE_MANUAL := "手動起動で接続"
+const TEXT_BLE_MANUAL_TIP := "アプリからブリッジを起動せず、ターミナルで起動したブリッジにつなぎます（macOS で Bluetooth 権限のエラーが出るとき）"
+const TEXT_BLE_MANUAL_HINT := "ターミナルで次のコマンドを実行してください（実行したままにしておきます）:"
+const TEXT_COPY := "コピー"
+const TEXT_COPIED := "コピーしました"
+const TEXT_BLE_NOT_READY := "BLE ブリッジの準備ができていません"
+const LABEL_DEVICE_NAME := "機器名"
+const LABEL_RSSI := "電波"
+
+const COLUMN_COUNT := 8
+const MODE_COLORS := {
+	SensorDevice.Mode.SERIAL: Color(0.55, 0.8, 1.0),
+	SensorDevice.Mode.BLE: Color(0.78, 0.62, 1.0),
+	SensorDevice.Mode.MOCK: Color(0.65, 0.65, 0.65),
+}
+const COLOR_OK := Color(0.45, 0.85, 0.5)
+const COLOR_BUSY := Color(0.9, 0.85, 0.4)
+const COLOR_ERROR := Color(1.0, 0.6, 0.45)
+const COLOR_MUTED := Color(1, 1, 1, 0.6)
+
+
+## 一覧の1行分のコントロール。
+class Row:
+	var name_edit: LineEdit
+	var mode: Label
+	var device_name: Label
+	var id: Label
+	var state: Label
+	var rssi: Label
+	var rate: Label
+	var action: Button
+
+	func controls() -> Array[Control]:
+		return [name_edit, mode, device_name, id, state, rssi, rate, action]
+
 
 var _manager: SensorManager
 var _grid: GridContainer
 var _notice: Label
+var _scan_state: Label
+var _ble_panel: Control
+var _ble_dot: Label
+var _ble_status: Label
+var _ble_restart: Button
+var _ble_manual: Button
+var _manual_box: VBoxContainer
+var _manual_command: LineEdit
+var _copy_button: Button
+var _header_count := 0
+var _rows: Dictionary = {}           ## device_id -> Row
+var _row_order: PackedStringArray = []
 
 
 func setup(manager: SensorManager) -> void:
@@ -26,11 +82,18 @@ func _build() -> void:
 	scan_button.pressed.connect(func() -> void: _manager.scan_all())
 	toolbar.add_child(scan_button)
 
+	_scan_state = Label.new()
+	_scan_state.modulate = COLOR_BUSY
+	toolbar.add_child(_scan_state)
+
 	var hint := Label.new()
 	hint.text = UIStrings.HINT_RENAME
-	hint.modulate = Color(1, 1, 1, 0.6)
+	hint.modulate = COLOR_MUTED
 	toolbar.add_child(hint)
 	add_child(toolbar)
+
+	_ble_panel = _build_ble_panel()
+	add_child(_ble_panel)
 
 	_notice = Label.new()
 	_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -41,55 +104,238 @@ func _build() -> void:
 	_grid.columns = COLUMN_COUNT
 	_grid.add_theme_constant_override("h_separation", 14)
 	_grid.add_theme_constant_override("v_separation", 6)
+	for header in [UIStrings.LABEL_NICKNAME, UIStrings.LABEL_MODE, LABEL_DEVICE_NAME, UIStrings.LABEL_ID,
+			UIStrings.LABEL_STATE, LABEL_RSSI, UIStrings.LABEL_RATE, UIStrings.LABEL_ACTION]:
+		var label := _make_label(header)
+		label.modulate = COLOR_MUTED
+		_grid.add_child(label)
+	_header_count = _grid.get_child_count()
 	add_child(_grid)
+
+
+## BLE ブリッジの状態・対処・操作ボタンをまとめた枠。
+func _build_ble_panel() -> Control:
+	var panel := PanelContainer.new()
+	var margin := MarginContainer.new()
+	for side in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(side, 8)
+	var box := VBoxContainer.new()
+
+	var line := HBoxContainer.new()
+	line.add_theme_constant_override("separation", 8)
+	_ble_dot = Label.new()
+	_ble_dot.text = "●"
+	line.add_child(_ble_dot)
+	_ble_status = Label.new()
+	_ble_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_ble_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line.add_child(_ble_status)
+
+	_ble_restart = Button.new()
+	_ble_restart.text = TEXT_BLE_RESTART
+	_ble_restart.tooltip_text = TEXT_BLE_RESTART_TIP
+	_ble_restart.pressed.connect(func() -> void:
+		var ble := _ble()
+		if ble != null:
+			ble.restart_bridge()
+		_refresh()
+	)
+	line.add_child(_ble_restart)
+
+	_ble_manual = Button.new()
+	_ble_manual.text = TEXT_BLE_MANUAL
+	_ble_manual.tooltip_text = TEXT_BLE_MANUAL_TIP
+	_ble_manual.pressed.connect(func() -> void:
+		var ble := _ble()
+		if ble != null:
+			ble.use_manual_bridge()
+		_refresh()
+	)
+	line.add_child(_ble_manual)
+	box.add_child(line)
+
+	_manual_box = VBoxContainer.new()
+	var manual_hint := _make_label(TEXT_BLE_MANUAL_HINT)
+	manual_hint.modulate = COLOR_MUTED
+	_manual_box.add_child(manual_hint)
+	var command_line := HBoxContainer.new()
+	_manual_command = LineEdit.new()
+	_manual_command.editable = false
+	_manual_command.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	command_line.add_child(_manual_command)
+	_copy_button = Button.new()
+	_copy_button.text = TEXT_COPY
+	_copy_button.pressed.connect(func() -> void:
+		DisplayServer.clipboard_set(_manual_command.text)
+		_copy_button.text = TEXT_COPIED
+	)
+	command_line.add_child(_copy_button)
+	_manual_box.add_child(command_line)
+	box.add_child(_manual_box)
+
+	margin.add_child(box)
+	panel.add_child(margin)
+	return panel
+
+
+func _ble() -> BleSensorProvider:
+	return _manager.get_provider(SensorDevice.Mode.BLE) as BleSensorProvider
 
 
 func _refresh() -> void:
 	if _grid == null:
 		return
-	_notice.text = "\n".join(_manager.unavailable_notices())
+	_scan_state.text = TEXT_SCANNING if _manager.is_scanning() else ""
+	_refresh_ble_panel()
+
+	# BLE 以外で使えない方式の注意書き（BLE は上の枠に出す）
+	var notices := PackedStringArray()
+	for provider in _manager.providers:
+		if provider.get_mode() != SensorDevice.Mode.BLE and not provider.is_available():
+			notices.append(provider.unavailable_reason())
+	_notice.text = "\n".join(notices)
 	_notice.visible = not _notice.text.is_empty()
 
-	for child in _grid.get_children():
-		child.queue_free()
-
-	for header in [UIStrings.LABEL_NICKNAME, UIStrings.LABEL_MODE, UIStrings.LABEL_ID,
-			UIStrings.LABEL_STATE, UIStrings.LABEL_RATE, UIStrings.LABEL_ACTION]:
-		var label := Label.new()
-		label.text = header
-		label.modulate = Color(1, 1, 1, 0.6)
-		_grid.add_child(label)
-
+	_sync_rows()
 	for device in _manager.registry.all():
-		_add_row(device)
+		_update_row(_rows[device.id], device)
 
 
-func _add_row(device: SensorDevice) -> void:
-	var name_edit := LineEdit.new()
-	name_edit.text = device.nickname
-	name_edit.placeholder_text = device.id
-	name_edit.custom_minimum_size.x = 160
-	name_edit.text_submitted.connect(
-		func(new_text: String) -> void: _manager.registry.set_nickname(device.id, new_text)
+func _refresh_ble_panel() -> void:
+	var ble := _ble()
+	_ble_panel.visible = ble != null
+	if ble == null:
+		return
+	_ble_status.text = ble.status_text()
+	if ble.has_problem():
+		_ble_dot.modulate = COLOR_ERROR
+	elif ble.is_ready():
+		_ble_dot.modulate = COLOR_OK
+	else:
+		_ble_dot.modulate = COLOR_BUSY
+
+	var show_manual := ble.suggests_manual_launch()
+	_manual_box.visible = show_manual
+	if show_manual:
+		var command := ble.manual_command()
+		if _manual_command.text != command:
+			_manual_command.text = command
+			_copy_button.text = TEXT_COPY
+
+
+## 行の集合を、レジストリのデバイス一覧に合わせる。既存の行は作り直さず並べ替えるだけ。
+func _sync_rows() -> void:
+	var ids := PackedStringArray()
+	for device in _manager.registry.all():
+		ids.append(device.id)
+	if ids == _row_order:
+		return
+
+	for id in _rows.keys():
+		if not ids.has(id):
+			for control in (_rows[id] as Row).controls():
+				_grid.remove_child(control)
+				control.queue_free()
+			_rows.erase(id)
+
+	var index := _header_count
+	for id in ids:
+		if not _rows.has(id):
+			_rows[id] = _create_row(id)
+		for control in (_rows[id] as Row).controls():
+			_grid.move_child(control, index)   # move_child はフォーカスを保つ
+			index += 1
+	_row_order = ids
+
+
+func _create_row(device_id: String) -> Row:
+	var row := Row.new()
+	row.name_edit = LineEdit.new()
+	row.name_edit.custom_minimum_size.x = 160
+	row.name_edit.text_submitted.connect(func(new_text: String) -> void:
+		_save_nickname(device_id, new_text)
+		row.name_edit.release_focus()
 	)
-	_grid.add_child(name_edit)
+	row.name_edit.focus_exited.connect(func() -> void: _save_nickname(device_id, row.name_edit.text))
+	row.mode = Label.new()
+	row.device_name = Label.new()
+	row.device_name.mouse_filter = Control.MOUSE_FILTER_PASS
+	row.id = Label.new()
+	row.id.mouse_filter = Control.MOUSE_FILTER_PASS
+	row.state = Label.new()
+	row.state.mouse_filter = Control.MOUSE_FILTER_PASS
+	row.rssi = Label.new()
+	row.rate = Label.new()
+	row.action = Button.new()
+	row.action.pressed.connect(func() -> void: _on_action(device_id))
 
-	_grid.add_child(_make_label(SensorDevice.mode_label(device.mode)))
-	_grid.add_child(_make_label(device.id))
-	_grid.add_child(_make_label(
-		UIStrings.LABEL_CONNECTED if device.connected else UIStrings.LABEL_DISCONNECTED
-	))
-	_grid.add_child(_make_label("%.0f Hz" % device.rate_hz if device.connected else "-"))
+	# 初回はニックネームを入れておく（以後は入力中でないときだけ同期する）
+	var device := _manager.registry.get_device(device_id)
+	if device != null:
+		row.name_edit.text = device.nickname
+	for control in row.controls():
+		_grid.add_child(control)
+	return row
 
-	var action := Button.new()
-	action.text = UIStrings.BTN_DISCONNECT if device.connected else UIStrings.BTN_CONNECT
-	action.pressed.connect(func() -> void:
-		if device.connected:
-			_manager.close_device(device.id)
-		else:
-			_manager.open_device(device.id)
-	)
-	_grid.add_child(action)
+
+func _update_row(row: Row, device: SensorDevice) -> void:
+	if not row.name_edit.has_focus() and row.name_edit.text != device.nickname:
+		row.name_edit.text = device.nickname
+	row.name_edit.placeholder_text = device.label if not device.label.is_empty() else device.id
+
+	row.mode.text = SensorDevice.mode_label(device.mode)
+	row.mode.modulate = MODE_COLORS.get(device.mode, Color.WHITE)
+	row.device_name.text = device.label if not device.label.is_empty() else "-"
+	row.id.text = device.id
+
+	var ble: BleSensorProvider = _ble() if device.mode == SensorDevice.Mode.BLE else null
+	row.device_name.tooltip_text = ble.device_info(device.id) if ble != null else ""
+	var connecting := _manager.is_connecting(device.id)
+	var error := ble.device_error(device.id) if ble != null else ""
+	if device.connected:
+		row.state.text = UIStrings.LABEL_CONNECTED
+		row.state.modulate = COLOR_OK
+	elif connecting:
+		row.state.text = TEXT_CONNECTING
+		row.state.modulate = COLOR_BUSY
+	elif not error.is_empty():
+		row.state.text = UIStrings.LABEL_DISCONNECTED + TEXT_ERROR_SUFFIX
+		row.state.modulate = COLOR_ERROR
+	else:
+		row.state.text = UIStrings.LABEL_DISCONNECTED
+		row.state.modulate = Color.WHITE
+	row.state.tooltip_text = error
+
+	row.rssi.text = "%d dBm" % device.rssi if device.rssi != 0 else "-"
+	row.rate.text = "%.0f Hz" % device.rate_hz if device.connected else "-"
+
+	if device.connected:
+		row.action.text = UIStrings.BTN_DISCONNECT
+	elif connecting:
+		row.action.text = TEXT_CANCEL
+	else:
+		row.action.text = UIStrings.BTN_CONNECT
+	var ble_not_ready := ble != null and not device.connected and not connecting \
+			and (not ble.is_ready() or not ble.is_available())
+	row.action.disabled = ble_not_ready
+	row.action.tooltip_text = TEXT_BLE_NOT_READY if ble_not_ready else ""
+
+
+func _on_action(device_id: String) -> void:
+	var device := _manager.registry.get_device(device_id)
+	if device == null:
+		return
+	if device.connected or _manager.is_connecting(device_id):
+		_manager.close_device(device_id)
+	else:
+		_manager.open_device(device_id)
+	_refresh()
+
+
+func _save_nickname(device_id: String, text: String) -> void:
+	var device := _manager.registry.get_device(device_id)
+	if device != null and device.nickname != text:
+		_manager.registry.set_nickname(device_id, text)
 
 
 func _make_label(text: String) -> Label:
