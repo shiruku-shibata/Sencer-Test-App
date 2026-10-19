@@ -2,7 +2,8 @@ extends Control
 ## アプリのルート。サイドバー・画面切り替え・ステータスバーを組み立てる。
 ##
 ## 画面（S1〜S5）はそれぞれ独立したクラスになっており、
-## 新しい画面を追加する場合は _create_screens() に1行足すだけでよい。
+## 新しい画面を追加する場合は _create_screens() に数行足すだけでよい。
+## 並び順: デバイス管理 / モニタリング / しきい値測定 / ログ管理 / マニュアル
 
 const SIDEBAR_WIDTH := 180
 
@@ -17,6 +18,9 @@ var _title_label: Label
 var _status_devices: Label
 var _status_rate: Label
 var _status_record: Label
+var _status_threshold: Label
+var _monitor: MonitorScreen
+var _threshold: ThresholdScreen
 var _current_screen := ""
 
 
@@ -95,6 +99,9 @@ func _build_status_bar() -> PanelContainer:
 	box.add_child(_status_rate)
 	box.add_child(_status_record)
 
+	_status_threshold = Label.new()
+	box.add_child(_status_threshold)
+
 	panel.add_child(box)
 	return panel
 
@@ -104,9 +111,13 @@ func _create_screens() -> void:
 	devices.setup(_manager)
 	_register_screen(UIStrings.SCREEN_DEVICES, devices)
 
-	var monitor := MonitorScreen.new()
-	monitor.setup(_manager, _logger)
-	_register_screen(UIStrings.SCREEN_MONITOR, monitor)
+	_monitor = MonitorScreen.new()
+	_monitor.setup(_manager, _logger)
+	_register_screen(UIStrings.SCREEN_MONITOR, _monitor)
+
+	_threshold = ThresholdScreen.new()
+	_threshold.setup(_manager)
+	_register_screen(UIStrings.SCREEN_THRESHOLD, _threshold)
 
 	var logs := LogsScreen.new()
 	logs.setup(_logger)
@@ -151,6 +162,8 @@ func _process(_delta: float) -> void:
 	_status_rate.text = "受信: %.0f Hz" % rate
 
 	if _logger.is_recording():
-		_status_record.text = "記録中 %.1f s" % _logger.elapsed_sec()
+		_status_record.text = "記録中 %.1f s（%s）" % [_logger.elapsed_sec(), _monitor.recording_axes_text()]
 	else:
 		_status_record.text = "記録: 停止中"
+
+	_status_threshold.text = _threshold.status_text()

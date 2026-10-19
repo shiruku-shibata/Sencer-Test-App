@@ -9,7 +9,7 @@ func setup() -> void:
 	add_theme_constant_override("separation", 12)
 
 	var nav := VBoxContainer.new()
-	nav.custom_minimum_size.x = 180
+	nav.custom_minimum_size.x = 200
 	nav.add_theme_constant_override("separation", 4)
 
 	var first_page := ""
@@ -29,6 +29,7 @@ func setup() -> void:
 	_body.bbcode_enabled = true
 	_body.fit_content = false
 	_body.scroll_active = true
+	_body.selection_enabled = true   # コマンドやパスをコピーできるように
 	panel.add_child(_body)
 	add_child(panel)
 
