@@ -33,9 +33,30 @@ const LABEL_TIME_WINDOW := "時間窓"
 const LABEL_TARGET_DEVICE := "対象デバイス"
 const LABEL_ACCEL := "加速度 [G]"
 const LABEL_GYRO := "ジャイロ [deg/s]"
+const LABEL_AXES := "軸"
+const LABEL_MOVING_AVERAGE := "移動平均"
 
 const HINT_NO_DEVICE := "接続中のデバイスがありません。「デバイス管理」から接続してください。"
 const HINT_RENAME := "ニックネームを入力してEnterで保存"
+
+# ---------------------------------------------------------------- 軸選択
+
+const AXIS_GROUP_ACCEL := "加速度"
+const AXIS_GROUP_GYRO := "ジャイロ"
+const AXIS_GROUP_MAGNITUDE := "合成"
+const AXIS_LOCKED_RECORDING := "記録中は軸を変更できません"
+const AXIS_LOCKED_MEASURING := "測定中は軸を変更できません"
+
+# ---------------------------------------------------------------- モニタリング（S2）
+
+const MONITOR_RECORD_TARGET := "記録対象: %s"
+const MONITOR_RECORDING_AXES := "記録中の軸: %s"
+const MONITOR_READOUT_AXIS := "軸"
+const MONITOR_READOUT_NOW := "現在"
+const MONITOR_READOUT_MAX := "最大"
+const MONITOR_READOUT_MIN := "最小"
+const MONITOR_SAMPLE_COUNT := "サンプル数"
+const MONITOR_READOUT_NOTE := "最大・最小は表示中の時間窓の値"
 
 ## マニュアル（S5）の本文。BBCode で表示する。
 const MANUAL_PAGES := {
