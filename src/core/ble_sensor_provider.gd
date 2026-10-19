@@ -56,6 +56,62 @@ enum State {
 	FAILED,          ## 使えない（理由は _fail_reason）
 }
 
+
+## BLE のサンプルに時刻を付ける。
+##
+## BLE のデータはブリッジが約20msごとにまとめて送るので、受信した時刻をそのまま使うと
+## 同じ時刻のサンプルが2〜4個並んでしまう。そこで、1データグラムの最後のサンプルを受信時刻とし、
+## それより前のサンプルは「推定サンプル間隔」ずつさかのぼった時刻にする。
+## 推定間隔は直近の受信レート（約1秒ごとに測り直す）から求め、デバイスが知らせるレート
+## （情報行や "# ok=RATE rate=50" の rate=）があれば、それを初期値にする。
+## 付ける時刻はデバイスごとに必ず単調増加（前のサンプルより最低 1ms 後）にする。
+class SampleClock:
+	const DEFAULT_INTERVAL_MS := 10.0   ## 何も分からないとき（ファームの既定 100Hz）
+	const MIN_INTERVAL_MS := 2.0        ## 500Hz より細かくはしない
+	const MAX_INTERVAL_MS := 100.0      ## 10Hz より粗くはしない（ファームの下限）
+	const WINDOW_MS := 1000             ## 受信レートを測る区間
+	const GAP_MS := 250                 ## これより間が空いたら（一時停止など）測り直す
+
+	var interval_ms := DEFAULT_INTERVAL_MS
+	var _last_stamp := -1
+	var _last_rx := -1
+	var _window_start := -1
+	var _window_count := 0
+
+	## count 個のサンプルが now_ms に届いたときの、各サンプルの時刻（古い順）。
+	func stamp(count: int, now_ms: int) -> PackedInt64Array:
+		_measure(count, now_ms)
+		var stamps := PackedInt64Array()
+		for i in count:
+			var t := int(round(now_ms - (count - 1 - i) * interval_ms))
+			if _last_stamp >= 0 and t <= _last_stamp:
+				t = _last_stamp + 1
+			stamps.append(t)
+			_last_stamp = t
+		return stamps
+
+	## デバイスが知らせたレート [Hz] を推定の初期値にする。
+	func set_rate_hint(rate_hz: float) -> void:
+		if rate_hz <= 0.0:
+			return
+		interval_ms = clampf(1000.0 / rate_hz, MIN_INTERVAL_MS, MAX_INTERVAL_MS)
+		_window_start = -1   # 測り直す
+
+	func _measure(count: int, now_ms: int) -> void:
+		var gap := _last_rx >= 0 and now_ms - _last_rx > GAP_MS
+		_last_rx = now_ms
+		if _window_start < 0 or gap:
+			# 区間の始まり。このデータグラムの分は区間より前に溜まったものなので数えない
+			_window_start = now_ms
+			_window_count = 0
+			return
+		_window_count += count
+		var elapsed := now_ms - _window_start
+		if elapsed >= WINDOW_MS and _window_count > 0:
+			interval_ms = clampf(float(elapsed) / _window_count, MIN_INTERVAL_MS, MAX_INTERVAL_MS)
+			_window_start = now_ms
+			_window_count = 0
+
 ## 設定（BleSensorProvider.new() の直後、最初の scan() より前に変える）
 var app_port := DEFAULT_APP_PORT
 var bridge_port := DEFAULT_BRIDGE_PORT
@@ -90,7 +146,9 @@ var _connected: Dictionary = {}               ## address -> true
 var _connecting: Dictionary = {}              ## address -> 経過秒
 var _cancelled: Dictionary = {}               ## 接続中に切断を押された address -> true
 var _device_errors: Dictionary = {}           ## address -> 直近のエラー文
-var _device_info: Dictionary = {}             ## address -> 直近の情報行（# model=...）
+var _device_info: Dictionary = {}             ## address -> 直近の情報行（# model=... を含む行だけ）
+var _device_replies: Dictionary = {}          ## address -> 直近のその他の '#' 行（# ok= / # error= / # event=）
+var _clocks: Dictionary = {}                  ## address -> SampleClock
 var _logs := PackedStringArray()
 var _is_shut_down := false
 
@@ -354,8 +412,14 @@ func device_error(device_id: String) -> String:
 
 
 ## デバイスが送ってきた情報行（例 "# model=M5StickCPlus2 rate=100"）。無ければ空。
+## `model=` を含む行だけを覚えるので、コマンド応答などでは上書きされない。
 func device_info(device_id: String) -> String:
 	return str(_device_info.get(device_id, ""))
+
+
+## デバイスが送ってきた直近の応答・イベント・エラー行（例 "# ok=RATE rate=50"、"# error=imu_not_found"）。
+func device_reply(device_id: String) -> String:
+	return str(_device_replies.get(device_id, ""))
 
 
 ## ブリッジから届いたログ（新しいものが最後）。
@@ -779,6 +843,8 @@ func _mark_connected(address: String) -> void:
 		devices_discovered.emit(_known_devices())
 	_connected[address] = true
 	_device_errors.erase(address)
+	_device_replies.erase(address)
+	_clocks[address] = SampleClock.new()   # 接続のたびに時刻の推定をやり直す
 	connection_changed.emit(address, true)
 
 
@@ -806,14 +872,51 @@ func _on_data(message: Dictionary) -> void:
 	var lines: Variant = message.get("lines", [])
 	if typeof(lines) != TYPE_ARRAY:
 		return
+	var readings: Array[SensorReading] = []
 	for line in lines:
 		var text := str(line)
 		if text.begins_with("#"):
-			_device_info[address] = text
+			_on_info_line(address, text)
 			continue
 		var reading := SensorDataParser.parse_line(text, address)
 		if reading != null:
-			reading_received.emit(reading)
+			readings.append(reading)
+	if readings.is_empty():
+		return
+	# 1データグラムに数サンプルまとめて届くので、受信時刻から逆算した時刻に付け替える
+	var clock: SampleClock = _clocks.get(address)
+	if clock == null:
+		clock = SampleClock.new()
+		_clocks[address] = clock
+	var stamps := clock.stamp(readings.size(), Time.get_ticks_msec())
+	for i in readings.size():
+		readings[i].timestamp_ms = stamps[i]
+		reading_received.emit(readings[i])
+
+
+## デバイスからの '#' 行（情報行・コマンド応答・イベント・エラー）を振り分ける。
+func _on_info_line(address: String, text: String) -> void:
+	var fields := parse_info_fields(text)
+	if fields.has("model"):
+		_device_info[address] = text          # 機種などの情報行だけを覚える
+	else:
+		_device_replies[address] = text       # # ok=… / # error=… / # event=…
+	if fields.has("rate") and str(fields["rate"]).is_valid_int():
+		var clock: SampleClock = _clocks.get(address)
+		if clock == null:
+			clock = SampleClock.new()
+			_clocks[address] = clock
+		clock.set_rate_hint(float(int(fields["rate"])))
+
+
+## "# model=M5StickCPlus2 rate=100 ..." の key=value を辞書にする（値の無い語は無視）。
+static func parse_info_fields(text: String) -> Dictionary:
+	var fields := {}
+	for word in text.trim_prefix("#").strip_edges().split(" ", false):
+		var eq := word.find("=")
+		if eq > 0:
+			fields[word.substr(0, eq)] = word.substr(eq + 1)
+	return fields
 
 
 func _known_devices() -> Array:
