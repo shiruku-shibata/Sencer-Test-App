@@ -134,7 +134,7 @@ func _create_screens() -> void:
 	_register_screen(UIStrings.SCREEN_MONITOR, _monitor)
 
 	_threshold = ThresholdScreen.new()
-	_threshold.setup(_manager)
+	_threshold.setup(_manager, _logger)
 	_register_screen(UIStrings.SCREEN_THRESHOLD, _threshold)
 
 	var logs := LogsScreen.new()

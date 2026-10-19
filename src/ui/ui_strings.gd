@@ -186,6 +186,34 @@ const TH_MSG_DELETED := "削除しました: %s"
 const TH_MSG_JSON_COPIED := "JSONをクリップボードにコピーしました。"
 const TH_MSG_CODE_COPIED := "%s のコードをクリップボードにコピーしました。"
 
+const TH_STEP6_TITLE := "⑥ ログで判定テスト"
+const TH_STEP6_DESC := "ログ管理に保存した CSV に、今のしきい値で判定をかけます。しきい値を動かすとすぐ判定し直すので、実機なしでしきい値を詰められます。"
+const TH_LOG_OPEN := "表示"
+const TH_LOG_EMPTY := "（記録されたログなし）"
+const TH_LOG_NOT_OPEN := "ログを選んで「表示」を押すと、左の波形がログ全体の表示に切り替わります。"
+const TH_LOG_OPENED := "ログを表示しています: %s"
+const TH_LOG_LOAD_FAILED := "ログを読み込めませんでした（データ行が足りないか、形式が違います）。"
+const TH_LOG_BANNER := "ログ表示中: %s　（波形を左右にドラッグすると範囲を選べます）"
+const TH_LOG_BACK_TO_LIVE := "ライブ表示に戻る"
+const TH_LOG_INFO := "%s ・ %.1f 秒 ・ %d サンプル ・ 列: %s"
+const TH_LOG_SELECTION := "選択範囲: %.2f 〜 %.2f 秒（%d サンプル）"
+const TH_LOG_RANGE := "範囲 %s 〜 %s"
+const TH_LOG_MISSING := "このログには %s の列がありません（0 として判定されます）。"
+const TH_LOG_MISSING_MAG_HINT := "合成値には元の3軸（ax,ay,az / gx,gy,gz）の列が必要です（合成値の列だけでは再現できません）。"
+const TH_LOG_COUNT := "ログでの判定回数: %d"
+const TH_LOG_NO_FIRE := "このしきい値では、ログの中で一度も判定されませんでした。"
+const TH_LOG_FIRES := "判定位置: %s"
+const TH_LOG_FIRES_MORE := " ほか %d 件"
+const TH_LOG_IMPORT_HINT := "ログの一部を①静止測定・②試行として取り込めます（波形を左右にドラッグして範囲を選ぶ。選ばなければログ全体）。"
+const TH_LOG_IMPORT_BASELINE := "ログ全体を静止測定に"
+const TH_LOG_IMPORT_TRIAL := "ログ全体を試行に"
+const TH_LOG_IMPORT_BASELINE_SEL := "選択範囲を静止測定に"
+const TH_LOG_IMPORT_TRIAL_SEL := "選択範囲を試行に"
+const TH_LOG_IMPORT_MISSING := "取り込めません: このログには %s の列がありません。"
+const TH_LOG_IMPORT_TOO_SHORT := "範囲が短すぎます。もう少し広く選んでください。"
+const TH_LOG_IMPORTED_BASELINE := "ログの %.2f 〜 %.2f 秒を静止測定として取り込みました。"
+const TH_LOG_IMPORTED_TRIAL := "ログの %.2f 〜 %.2f 秒を試行として取り込みました。"
+
 const TH_CONFIRM_TITLE := "確認"
 const BTN_OK := "OK"
 const BTN_CANCEL := "キャンセル"
@@ -273,6 +301,17 @@ M5-Sensor-MOCK1 / M5-Sensor-MOCK2 という BLE デバイスが見えるよう�
 5. [b]④ 判定テスト[/b]: 実際に動かして、ランプが光るか・判定回数が合うかを確かめます。
 	波形の赤い線をドラッグするか、数値を入力して微調整できます。
 6. [b]⑤ 保存と共有[/b]: 名前を付けて保存します（「プロファイルの共有」ページ）。
+
+[b]⑥ ログで判定テスト（実機なしで詰める）[/b]
+モニタリング画面で記録した CSV を使って、しきい値を机の上で調整できます。
+1. ⑥ でログを選んで [b]表示[/b] を押すと、左の波形がログ全体の表示に変わり、今のしきい値で判定した位置に赤い縦線が出ます。
+2. 波形の赤い線をドラッグしたり ④ の数値を変えたりすると、すぐに判定し直します。⑥ に判定回数と判定位置（秒）が出るので、
+	「振った回数」と合うようにしきい値を詰めます。ライブの判定回数（④）には影響しません。
+3. 波形を左右にドラッグして範囲を選ぶと、その範囲を [b]静止測定[/b] や [b]試行[/b] として取り込めます（選ばなければログ全体）。
+	取り込んだ結果は ① ② に入り、③ の推奨値にも使われます。
+4. [b]ライブ表示に戻る[/b] で通常の表示に戻ります。
+・判定に使う軸の列がログに無いと警告が出ます。合成値（|a| |g|）は元の3軸の列から計算するので、
+	記録するときは加速度なら aX aY aZ、ジャイロなら gX gY gZ を選んでおくと安心です。
 
 [b]判定品質の見方[/b]
 [color=#5cc77a]● 良好[/color]　静止中の揺れと動作のピークに十分な差があります。

@@ -10,11 +10,16 @@ extends Control
 ## しきい値線のうち draggable なものはマウスで上下にドラッグでき、
 ## そのたびに line_dragged(id, value) が発火する。値の確定や丸めは受け取り側が行い、
 ## 必要なら set_lines() で描き直す（ドラッグ中に呼んでも掴んだ線は外れない）。
+##
+## selectable にすると、線の無い所を横にドラッグして範囲を選べる（selection_changed）。
 
 ## しきい値線をドラッグ中、マウス位置の値を通知する。
 signal line_dragged(id: Variant, value: float)
 ## しきい値線のドラッグを離したときに通知する。
 signal line_drag_finished(id: Variant, value: float)
+## selectable のとき、横方向にドラッグして選んだ範囲（0..1 の比率）を通知する。
+## ドラッグ中も逐次通知する。解除（クリックだけ）は (-1, -1)。
+signal selection_changed(x0: float, x1: float)
 
 const BG_COLOR := Color(0.078, 0.105, 0.113)
 const GRID_COLOR := Color(0.149, 0.192, 0.184)
@@ -25,6 +30,9 @@ const TICK_BG_COLOR := Color(0.078, 0.105, 0.113, 0.7)
 const TOOLTIP_BG := Color(0.05, 0.06, 0.07, 0.92)
 const DEFAULT_LINE_COLOR := Color("ff6b6b")
 const DEFAULT_BAND_COLOR := Color(0.55, 0.75, 1.0, 0.16)
+const SELECTION_COLOR := Color(0.55, 0.85, 1.0, 0.16)
+const SELECTION_EDGE := Color(0.55, 0.85, 1.0, 0.7)
+const MIN_SELECTION_PX := 4.0     ## これより短いドラッグはクリックとみなして選択解除
 
 const TICK_FONT_SIZE := 11
 const TOOLTIP_FONT_SIZE := 13
@@ -57,6 +65,13 @@ var unit_text := ""
 ## 表示区間のサンプル数。0 ならデータ長に合わせて横いっぱいに引き伸ばす。
 ## データが capacity に満たない間は右詰めで描く（マーカーの x 比率と揃えるため）。
 var capacity: int = 0
+## true なら、しきい値線の無い所を横にドラッグして範囲を選べる（ログ表示用）。
+var selectable := false:
+	set(v):
+		selectable = v
+		if not v:
+			_selecting = false
+		mouse_default_cursor_shape = Control.CURSOR_CROSS if v else Control.CURSOR_ARROW
 
 ## [{ "color": Color, "data": PackedFloat32Array, "width": float(任意) }] の配列
 var series: Array = []
@@ -72,6 +87,9 @@ var _hover_index := -1
 var _mouse_pos := Vector2.ZERO
 var _frozen_lo := 0.0             ## ドラッグ中はレンジを固定する（線を動かすとレンジが動く循環を防ぐ）
 var _frozen_hi := 0.0
+var _selection := Vector2(-1.0, -1.0)  ## 選択範囲（比率）。x < 0 なら選択なし
+var _selecting := false
+var _select_from := 0.0
 
 
 func _init() -> void:
@@ -115,6 +133,24 @@ func set_spans(spans: Array) -> void:
 func set_noise_band(min_value: float, max_value: float, color: Color = DEFAULT_BAND_COLOR) -> void:
 	_band = {"min": minf(min_value, max_value), "max": maxf(min_value, max_value), "color": color}
 	queue_redraw()
+
+
+## 選択範囲を設定する（比率）。他の波形と選択をそろえるとき用。シグナルは出さない。
+func set_selection(x0: float, x1: float) -> void:
+	if x0 < 0.0 or x1 < 0.0:
+		_selection = Vector2(-1.0, -1.0)
+	else:
+		_selection = Vector2(clampf(minf(x0, x1), 0.0, 1.0), clampf(maxf(x0, x1), 0.0, 1.0))
+	queue_redraw()
+
+
+func clear_selection() -> void:
+	set_selection(-1.0, -1.0)
+
+
+## 現在の選択範囲（比率）。選択なしなら (-1, -1)。
+func selection() -> Vector2:
+	return _selection
 
 
 func clear_noise_band() -> void:
@@ -187,6 +223,7 @@ func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), BG_COLOR)
 
 	_draw_spans(w, h)
+	_draw_selection(w, h)
 	_draw_band(w, lo, hi)
 	var ticks := _draw_grid(w, h, lo, hi)
 	_draw_series(w, h, lo, hi)
@@ -204,6 +241,16 @@ func _draw_spans(w: float, h: float) -> void:
 		if x1 - x0 < 1.0:
 			continue
 		draw_rect(Rect2(x0, 0.0, x1 - x0, h), span["color"])
+
+
+func _draw_selection(w: float, h: float) -> void:
+	if _selection.x < 0.0:
+		return
+	var x0 := _selection.x * w
+	var x1 := _selection.y * w
+	draw_rect(Rect2(x0, 0.0, maxf(x1 - x0, 1.0), h), SELECTION_COLOR)
+	draw_line(Vector2(x0, 0.0), Vector2(x0, h), SELECTION_EDGE, 1.0)
+	draw_line(Vector2(x1, 0.0), Vector2(x1, h), SELECTION_EDGE, 1.0)
 
 
 func _draw_band(w: float, lo: float, hi: float) -> void:
@@ -404,8 +451,19 @@ func _gui_input(event: InputEvent) -> void:
 				_mouse_pos = button.position
 				accept_event()
 				queue_redraw()
+			elif selectable:
+				_selecting = true
+				_select_from = _x_ratio(button.position.x)
+				set_selection(_select_from, _select_from)
+				accept_event()
 		elif _drag_index >= 0:
 			_end_drag(true)
+			accept_event()
+		elif _selecting:
+			_selecting = false
+			if (_selection.y - _selection.x) * size.x < MIN_SELECTION_PX:
+				clear_selection()
+			selection_changed.emit(_selection.x, _selection.y)
 			accept_event()
 	elif event is InputEventMouseMotion:
 		var motion := event as InputEventMouseMotion
@@ -417,6 +475,10 @@ func _gui_input(event: InputEvent) -> void:
 			line_dragged.emit(_lines[_drag_index]["id"], value)
 			accept_event()
 			queue_redraw()
+		elif _selecting:
+			set_selection(_select_from, _x_ratio(motion.position.x))
+			selection_changed.emit(_selection.x, _selection.y)
+			accept_event()
 		else:
 			_set_hover(_line_at(motion.position.y))
 
@@ -430,7 +492,10 @@ func _set_hover(index: int) -> void:
 	if index == _hover_index:
 		return
 	_hover_index = index
-	mouse_default_cursor_shape = Control.CURSOR_VSIZE if index >= 0 else Control.CURSOR_ARROW
+	if index >= 0:
+		mouse_default_cursor_shape = Control.CURSOR_VSIZE
+	else:
+		mouse_default_cursor_shape = Control.CURSOR_CROSS if selectable else Control.CURSOR_ARROW
 	queue_redraw()
 
 
@@ -442,6 +507,10 @@ func _end_drag(notify: bool) -> void:
 	queue_redraw()
 	if notify and not line.is_empty():
 		line_drag_finished.emit(line["id"], float(line["value"]))
+
+
+func _x_ratio(x: float) -> float:
+	return clampf(x / maxf(size.x, 1.0), 0.0, 1.0)
 
 
 ## y 座標の近くにあるドラッグ可能な線の番号（無ければ -1）。
