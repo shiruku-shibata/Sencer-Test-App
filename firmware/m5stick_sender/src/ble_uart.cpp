@@ -96,6 +96,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
     g_mtu = kDefaultMtu;
     g_reset_queue = true;
+    g_subscribed_event = false;  // 処理前に切れた購読イベントは次の接続に持ち越さない
     // 再広告は advertiseOnDisconnect(true) と poll() の両方で行う。
   }
 
