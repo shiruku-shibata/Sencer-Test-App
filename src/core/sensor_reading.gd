@@ -30,3 +30,20 @@ func to_csv_row() -> String:
 
 static func csv_header() -> String:
 	return "timestamp_ms,ax,ay,az,gx,gy,gz"
+
+
+## 指定した軸だけの CSV 行（列の並びは axes の順）。axes は SensorAxis.Id の配列。
+## 加速度系は小数4桁、角速度系は小数3桁（to_csv_row と同じ精度）。
+func to_csv_row_for(axes: Array) -> String:
+	var parts := PackedStringArray([str(timestamp_ms)])
+	for axis in axes:
+		var fmt := "%.4f" if SensorAxis.is_accel(axis) else "%.3f"
+		parts.append(fmt % SensorAxis.value_of(self, axis))
+	return ",".join(parts)
+
+
+## 指定した軸だけの CSV ヘッダ（例: "timestamp_ms,ax,gz"）。
+static func csv_header_for(axes: Array) -> String:
+	var parts := PackedStringArray(["timestamp_ms"])
+	parts.append_array(SensorAxis.keys_of(axes))
+	return ",".join(parts)
