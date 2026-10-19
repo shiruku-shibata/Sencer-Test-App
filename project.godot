@@ -1,0 +1,23 @@
+; Sensor Test App - Godot プロジェクト設定
+; エンジン: Godot 4.4 系（アドオン対応状況にあわせたバージョン。動作確認後に最新版へ追従）
+
+config_version=5
+
+[application]
+
+config/name="Sensor Test App"
+config/description="ゲーム制作用センサー（M5StickC Plus2）のテストツール"
+run/main_scene="res://src/ui/main.tscn"
+config/features=PackedStringArray("4.4", "GL Compatibility")
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=800
+window/size/resizable=true
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
