@@ -91,7 +91,10 @@ godot --path . -- --ble-mock          # 同じ意味
 python3 tools/ble_bridge/ble_bridge.py --mock
 ```
 
-疑似デバイスは `PAUSE` / `RESUME` / `RATE <Hz>` / `INFO` に反応します。
+疑似デバイスは `PAUSE` / `RESUME` / `RATE <Hz>` / `INFO` に反応し、応答・情報行・エラー行は
+実機ファームと同じ形式です（`# ok=PAUSE sending=0`、`# ok=RATE rate=50`、`# error=rate_out_of_range value=5 min=10 max=200`、
+`# model=MOCK name=… rate=… ble=1 fw=mock imu=MOCK sending=… connected=… drop_usb=0 drop_ble=0` など。
+詳細は `firmware/m5stick_sender/README.md` の「コマンド」）。
 通知は**わざと行の途中で分割**して届くので、行の組み立て処理の確認にも使えます。
 `--all` でスキャンすると、接続できない無関係な機器（`Other-Headphones`）も出ます。
 テスト用に `MOCK_DROP` を送ると「電波が途切れた」状態を再現します。

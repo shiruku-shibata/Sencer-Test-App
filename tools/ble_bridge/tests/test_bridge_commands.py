@@ -252,6 +252,123 @@ class DataTest(BridgeTestBase):
         self.assertNotIn("A1", self.bridge.assemblers)
 
 
+class EarlyNotifyBackend(FakeBackend):
+    """start_notify の直後（connect() が戻る前）に最初の通知が届く実機の順序を再現する。"""
+
+    def __init__(self, first_chunk, stale_chunk=None):
+        super().__init__()
+        self.first_chunk = first_chunk
+        self.stale_chunk = stale_chunk
+
+    async def connect(self, address, timeout):
+        self.connected.append(address)
+        self._emit_data(address, self.first_chunk)
+        return address
+
+
+class ConnectOrderTest(BridgeTestBase):
+    """PR #3 レビュー指摘: 接続直後の通知が行組み立てバッファの作り直しで消えないこと。"""
+
+    def test_first_notification_during_connect_is_kept(self):
+        self.backend = EarlyNotifyBackend(b"# model=M5StickCPlus2 name=M5-Sen")
+        self.bridge = self.make_bridge()
+        self.bridge.handle({"cmd": "connect", "address": "A1"})
+        self.settle()
+        self.bridge.on_device_data("A1", b"sor-1A2B rate=100\n0.0123,0.9811,-0.021")
+        self.bridge.on_device_data("A1", b"0,1.250,-0.500,0.125\n")
+        self.bridge.flush()
+        lines = [line for m in self.of_type("data") for line in m["lines"]]
+        self.assertEqual(lines, ["# model=M5StickCPlus2 name=M5-Sensor-1A2B rate=100",
+                                 "0.0123,0.9811,-0.0210,1.250,-0.500,0.125"])
+
+    def test_previous_session_fragment_is_discarded(self):
+        # 前の接続で組み立て途中だったバイトは、次の接続に持ち越さない
+        self.bridge.on_device_data("A1", b"12.5,0.0")
+        self.backend = EarlyNotifyBackend(b"1,2,3,4,5,6\n")
+        self.bridge.backend = self.backend
+        self.backend.on_data = self.bridge.on_device_data
+        self.bridge.handle({"cmd": "connect", "address": "A1"})
+        self.settle()
+        self.bridge.flush()
+        lines = [line for m in self.of_type("data") for line in m["lines"]]
+        self.assertEqual(lines, ["1,2,3,4,5,6"])
+
+    def test_data_is_not_sent_before_connected_status(self):
+        self.backend = EarlyNotifyBackend(b"1,2,3,4,5,6\n")
+        self.bridge = self.make_bridge()
+        sent_during_connect = []
+        original = self.backend.connect
+
+        async def connect_and_flush(address, timeout):
+            result = await original(address, timeout)
+            sent_during_connect.append(self.bridge.flush())
+            return result
+
+        self.backend.connect = connect_and_flush
+        self.bridge.handle({"cmd": "connect", "address": "A1"})
+        self.settle()
+        self.assertEqual(sent_during_connect, [0])
+        self.bridge.flush()
+        kinds = [(m["type"], m.get("state")) for m in self.out if m["type"] in ("status", "data")]
+        self.assertEqual(kinds, [("status", "connecting"), ("status", "connected"), ("data", None)])
+
+    def test_failed_connect_drops_buffers(self):
+        self.backend.fail_connect = RuntimeError("boom")
+        self.bridge.on_device_data("A1", b"partial")
+        self.bridge.handle({"cmd": "connect", "address": "A1"})
+        self.settle()
+        self.assertNotIn("A1", self.bridge.assemblers)
+        self.assertNotIn("A1", self.bridge.pending)
+
+
+class MockFirmwareFormatTest(unittest.TestCase):
+    """--mock の応答が実機ファーム（firmware/m5stick_sender README「コマンド」）と同じ形式であること。"""
+
+    def setUp(self):
+        self.dev = ble_bridge.MockDevice("AA", "M5-Sensor-MOCK1", -50, seed=1)
+        self.dev.connected = True
+
+    def test_ok_replies(self):
+        self.assertEqual(self.dev.handle_command("PAUSE"), "# ok=PAUSE sending=0")
+        self.assertTrue(self.dev.paused)
+        self.assertEqual(self.dev.handle_command("resume\r\n"), "# ok=RESUME sending=1")
+        self.assertFalse(self.dev.paused)
+        self.assertEqual(self.dev.handle_command("  rate 50  "), "# ok=RATE rate=50")
+        self.assertEqual(self.dev.rate, 50)
+
+    def test_info_line(self):
+        info = self.dev.handle_command("INFO")
+        self.assertEqual(
+            info,
+            "# model=MOCK name=M5-Sensor-MOCK1 rate=100 ble=1 fw=mock imu=MOCK sending=1 connected=1 "
+            "drop_usb=0 drop_ble=0")
+        keys = [part.split("=")[0] for part in info[2:].split()]
+        self.assertEqual(keys, ["model", "name", "rate", "ble", "fw", "imu", "sending", "connected",
+                                "drop_usb", "drop_ble"])
+
+    def test_error_replies(self):
+        cases = {
+            "RATE 5": "# error=rate_out_of_range value=5 min=10 max=200",
+            "RATE 99999999": "# error=rate_out_of_range value=999999 min=10 max=200",
+            "RATE": "# error=rate_missing min=10 max=200",
+            "RATE -50": "# error=rate_not_number min=10 max=200",
+            "RATE 50.5": "# error=rate_not_number min=10 max=200",
+            "RATE 50 60": "# error=unexpected_argument commands=PAUSE,RESUME,RATE,INFO",
+            "PAUSE now": "# error=unexpected_argument commands=PAUSE,RESUME,RATE,INFO",
+            "DANCE": "# error=unknown_command commands=PAUSE,RESUME,RATE,INFO",
+            "X" * 65: "# error=line_too_long max=64",
+        }
+        for command, expected in cases.items():
+            self.assertEqual(self.dev.handle_command(command), expected, command)
+        self.assertEqual(self.dev.rate, 100, "範囲外の RATE ではレートを変えない")
+        self.assertFalse(self.dev.paused)
+
+    def test_ignored_lines(self):
+        self.assertIsNone(self.dev.handle_command(""))
+        self.assertIsNone(self.dev.handle_command("   "))
+        self.assertIsNone(self.dev.handle_command("# comment"))
+
+
 class WatchdogTest(BridgeTestBase):
     def test_not_armed_before_first_contact(self):
         bridge = self.make_bridge(idle_timeout=10, managed=True)

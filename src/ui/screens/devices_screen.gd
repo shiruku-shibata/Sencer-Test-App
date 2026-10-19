@@ -289,7 +289,12 @@ func _update_row(row: Row, device: SensorDevice) -> void:
 	row.id.text = device.id
 
 	var ble: BleSensorProvider = _ble() if device.mode == SensorDevice.Mode.BLE else null
-	row.device_name.tooltip_text = ble.device_info(device.id) if ble != null else ""
+	var tips := PackedStringArray()
+	if ble != null:
+		for text in [ble.device_info(device.id), ble.device_reply(device.id)]:
+			if not text.is_empty():
+				tips.append(text)
+	row.device_name.tooltip_text = "\n".join(tips)
 	var connecting := _manager.is_connecting(device.id)
 	var error := ble.device_error(device.id) if ble != null else ""
 	if device.connected:

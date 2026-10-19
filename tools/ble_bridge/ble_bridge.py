@@ -47,7 +47,13 @@ NAME_PREFIX = "M5-Sensor-"
 MAX_LINES_PER_PACKET = 64      # 1データグラムに詰める最大行数（UDPサイズを抑える）
 MAX_LINE_LENGTH = 512          # これを超える「行」は壊れたデータとして捨てる
 MAX_PENDING_LINES = 4000       # アプリが受け取れないときに溜めすぎない上限（1台あたり）
-MAX_COMMAND_LENGTH = 64        # デバイスへ送るコマンド1行の上限
+MAX_COMMAND_LENGTH = 64        # デバイスへ送るコマンド1行の上限（ファームの kMaxCommandLength と同じ）
+
+# --mock の疑似デバイスが真似る実機ファームの仕様（firmware/m5stick_sender/README.md「コマンド」）
+MOCK_FIRMWARE_VERSION = "mock"
+MOCK_RATE_MIN = 10
+MOCK_RATE_MAX = 200
+MOCK_COMMANDS = "PAUSE,RESUME,RATE,INFO"
 
 BLEAK_INSTALL_HINT = (
     "bleak がインストールされていません。"
@@ -353,6 +359,7 @@ class MockDevice:
         self.paused = False
         self.connected = False
         self.task: Optional[asyncio.Task] = None
+        self.outbox: List[str] = []   # 次の送信で先に出す応答・情報行
         self._rng = random.Random(seed)
         self._phase = 0.0
         self._pending = b""
@@ -372,7 +379,58 @@ class MockDevice:
         return "%.4f,%.4f,%.4f,%.3f,%.3f,%.3f" % (ax, ay, az, gx, gy, gz)
 
     def info_line(self) -> str:
-        return "# model=MOCK name=%s rate=%d%s" % (self.name, self.rate, " paused" if self.paused else "")
+        """実機ファーム（sender_core の formatInfoLine）と同じ項目の情報行。"""
+        return ("# model=MOCK name=%s rate=%d ble=1 fw=%s imu=MOCK sending=%d connected=%d "
+                "drop_usb=0 drop_ble=0" % (self.name, self.rate, MOCK_FIRMWARE_VERSION,
+                                           0 if self.paused else 1, 1 if self.connected else 0))
+
+    def handle_command(self, line: str) -> Optional[str]:
+        """実機ファームと同じ規則でコマンドを解釈し、応答行（改行なし）を返す。応答なしは None。
+
+        firmware/m5stick_sender の README「コマンド」「エラー行」と同じ形式:
+          # ok=PAUSE sending=0 / # ok=RESUME sending=1 / # ok=RATE rate=50 / INFO は情報行
+          # error=rate_out_of_range value=5 min=10 max=200 など
+        """
+        if len(line.rstrip("\r\n")) > MAX_COMMAND_LENGTH:
+            return "# error=line_too_long max=%d" % MAX_COMMAND_LENGTH
+        text = line.strip()
+        if not text or text.startswith("#"):
+            return None   # 空行・コメント行は無視（応答なし）
+        tokens = text.split()
+        command = tokens[0].upper()
+        if command == "RATE":
+            if len(tokens) < 2:
+                return "# error=rate_missing min=%d max=%d" % (MOCK_RATE_MIN, MOCK_RATE_MAX)
+            if len(tokens) > 2:
+                return "# error=unexpected_argument commands=%s" % MOCK_COMMANDS
+            arg = tokens[1]
+            if not arg or any(c not in "0123456789" for c in arg):
+                return "# error=rate_not_number min=%d max=%d" % (MOCK_RATE_MIN, MOCK_RATE_MAX)
+            value = min(int(arg), 999999)
+            if value < MOCK_RATE_MIN or value > MOCK_RATE_MAX:
+                return "# error=rate_out_of_range value=%d min=%d max=%d" % (
+                    value, MOCK_RATE_MIN, MOCK_RATE_MAX)
+            self.rate = value
+            return "# ok=RATE rate=%d" % self.rate
+        if command not in ("PAUSE", "RESUME", "INFO"):
+            return "# error=unknown_command commands=%s" % MOCK_COMMANDS
+        if len(tokens) > 1:
+            return "# error=unexpected_argument commands=%s" % MOCK_COMMANDS
+        if command == "PAUSE":
+            self.paused = True
+            return "# ok=PAUSE sending=0"
+        if command == "RESUME":
+            self.paused = False
+            return "# ok=RESUME sending=1"
+        return self.info_line()
+
+    def queue_line(self, text: str) -> None:
+        """応答・情報行を送信待ちに入れる（サンプル行と同じ流れで、行の途中に割り込まないように送る）。"""
+        self.outbox.append(text)
+
+    def take_outbox(self) -> List[str]:
+        lines, self.outbox = self.outbox, []
+        return lines
 
     def split_notifications(self, data: bytes) -> List[bytes]:
         """BLE の通知（MTU 20 バイト前後）を真似て、行の途中で区切った断片にする。
@@ -438,11 +496,14 @@ class MockBackend(Backend):
                               "Nordic UART Service がありません（センサー用ファームウェアではない機器です）")
         dev.connected = True
         dev.paused = False
+        dev.outbox = []
+        dev._pending = b""   # 実機と同じく、接続のたびに送信待ちを捨てる
+        # 実機は購読が始まると最初に情報行を送る
+        dev.queue_line(dev.info_line())
         dev.task = asyncio.ensure_future(self._stream(dev))
         return dev.address
 
     async def _stream(self, dev: MockDevice) -> None:
-        self._emit_data(dev.address, (dev.info_line() + "\n").encode())
         carry = 0.0
         last = time.monotonic()
         try:
@@ -450,14 +511,17 @@ class MockBackend(Backend):
                 await asyncio.sleep(self.TICK_SEC)
                 now = time.monotonic()
                 elapsed, last = now - last, now
-                if dev.paused:
+                lines = dev.take_outbox()
+                if not dev.paused:
+                    carry += elapsed * dev.rate
+                    count = int(carry)
+                    carry -= count
+                    lines.extend(dev.make_line() for _ in range(count))
+                else:
+                    carry = 0.0
+                data = "".join(line + "\n" for line in lines).encode()
+                if not data and not dev._pending:
                     continue
-                carry += elapsed * dev.rate
-                count = int(carry)
-                carry -= count
-                if count <= 0:
-                    continue
-                data = "".join(dev.make_line() + "\n" for _ in range(count)).encode()
                 for chunk in dev.split_notifications(data):
                     self._emit_data(dev.address, chunk)
         except asyncio.CancelledError:
@@ -480,25 +544,14 @@ class MockBackend(Backend):
         if key is None or not self.devices[key].connected:
             raise BridgeError(ERR_NOT_CONNECTED, "未接続のデバイスです: %s" % address)
         dev = self.devices[key]
-        parts = line.strip().split()
-        command = parts[0].upper() if parts else ""
-        if command == "PAUSE":
-            dev.paused = True
-        elif command == "RESUME":
-            dev.paused = False
-        elif command == "RATE" and len(parts) >= 2 and parts[1].isdigit():
-            dev.rate = max(10, min(200, int(parts[1])))
-        elif command == "INFO":
-            pass
-        elif command == "MOCK_DROP":
-            # テスト用: 電波が途切れたことにする
+        if line.strip().upper() == "MOCK_DROP":
+            # テスト用（mock だけのコマンド）: 電波が途切れたことにする
             self._stop(dev)
             self._emit_disconnected(dev.address, "接続が切れました（mock: MOCK_DROP）")
             return
-        else:
-            self._emit_data(dev.address, ("# error unknown command: %s\n" % line.strip()).encode())
-            return
-        self._emit_data(dev.address, (dev.info_line() + "\n").encode())
+        reply = dev.handle_command(line)
+        if reply is not None:
+            dev.queue_line(reply)
 
     def connected_addresses(self) -> List[str]:
         return [d.address for d in self.devices.values() if d.connected]
@@ -668,14 +721,21 @@ class Bridge:
             return
         self._connecting.add(address)
         self.status(address, False, "connecting")
+        # 行の組み立てバッファは接続「前」に空にする。backend.connect() の中で通知の購読
+        # （start_notify）が始まり、戻る前に最初の通知（情報行）が届くことがあるため、
+        # 接続後に作り直すと組み立て途中の行が消えてしまう。
+        self.assemblers.pop(address, None)
+        self.pending.pop(address, None)
         try:
             real = await self.backend.connect(address, self.connect_timeout)
-            self.assemblers[real] = LineAssembler()
+            self.assemblers.setdefault(real, LineAssembler())
             self.pending.setdefault(real, [])
             self.status(real, True, "connected")
             self.log("info", "接続しました: %s" % real)
         except Exception as exc:
             err = classify_ble_error(exc, ERR_CONNECT_FAILED)
+            self.assemblers.pop(address, None)
+            self.pending.pop(address, None)
             self.status(address, False, "disconnected", err)
             self.log("error", "接続に失敗しました: %s: %s" % (address, err.message))
         finally:
@@ -734,6 +794,8 @@ class Bridge:
         """溜まった行をまとめて送る。送ったデータグラム数を返す。"""
         sent = 0
         for address, queue in self.pending.items():
+            if address in self._connecting:
+                continue   # 接続完了（status connected）より先にデータを送らない（アプリが捨ててしまう）
             while queue:
                 chunk = queue[:MAX_LINES_PER_PACKET]
                 del queue[:MAX_LINES_PER_PACKET]
