@@ -16,6 +16,7 @@ var _providers: Array = []
 var _failures := PackedStringArray()
 var _last_tick := 0
 var _readings: Dictionary = {}       ## device_id -> 受信数
+var _stamps: Dictionary = {}         ## device_id -> Array[int]（受け取った timestamp_ms）
 var _discovered: Array = []
 var _conn_events: Array = []         ## [device_id, connected]
 
@@ -27,6 +28,7 @@ func _initialize() -> void:
 
 func _run() -> void:
 	var started := Time.get_ticks_msec()
+	_phase_sample_clock()
 	await _phase_auto_launch()
 	await _phase_manual_bridge()
 	await _phase_failures()
@@ -76,6 +78,7 @@ func _phase_auto_launch() -> void:
 	_check(await _wait(func() -> bool: return int(_readings.get(address, 0)) >= 100, 10.0),
 			"A: データを受信できる（%d 件）" % int(_readings.get(address, 0)))
 	_check(p.device_info(address).begins_with("# model=MOCK"), "A: 情報行を覚えている")
+	_check_stamps(address, 5.0, 20.0, "A: 100Hz")
 
 	# PAUSE / RESUME
 	_check(p.send_command(address, "PAUSE"), "A: send_command(PAUSE)")
@@ -83,9 +86,25 @@ func _phase_auto_launch() -> void:
 	var before := int(_readings.get(address, 0))
 	await _pump(0.6)
 	_check(int(_readings.get(address, 0)) - before <= 2, "A: PAUSE で止まる")
+	_check(p.device_reply(address) == "# ok=PAUSE sending=0",
+			"A: コマンド応答を device_reply で取れる: " + p.device_reply(address))
+	_check(p.device_info(address).begins_with("# model=MOCK"),
+			"A: device_info は応答行で上書きされない: " + p.device_info(address))
 	_check(p.send_command(address, "RESUME"), "A: send_command(RESUME)")
 	_check(await _wait(func() -> bool: return int(_readings.get(address, 0)) > before + 30, 5.0), "A: RESUME で再開")
 	_check(not p.send_command("NO:SU:CH", "PAUSE"), "A: 未接続デバイスへの送信は false")
+
+	# RATE 50 にすると、付く時刻の間隔も約 20ms になる
+	_check(p.send_command(address, "RATE 50"), "A: send_command(RATE 50)")
+	_check(await _wait(func() -> bool: return p.device_reply(address) == "# ok=RATE rate=50", 3.0),
+			"A: RATE の応答: " + p.device_reply(address))
+	_stamps.erase(address)
+	await _pump(1.5)
+	_check_stamps(address, 15.0, 30.0, "A: 50Hz")
+	_check(p.send_command(address, "RATE 5"), "A: 範囲外の RATE も送れる")
+	_check(await _wait(func() -> bool: return p.device_reply(address).begins_with("# error=rate_out_of_range"), 3.0),
+			"A: 範囲外の RATE はエラー応答: " + p.device_reply(address))
+	p.send_command(address, "RATE 100")
 
 	# 切断
 	p.close_device(address)
@@ -251,7 +270,10 @@ func _make_provider(app_port: int, bridge_port: int) -> BleSensorProvider:
 	p.bridge_port = bridge_port
 	p.scan_timeout_sec = 1.0
 	p.reading_received.connect(func(r: SensorReading) -> void:
-		_readings[r.device_id] = int(_readings.get(r.device_id, 0)) + 1)
+		_readings[r.device_id] = int(_readings.get(r.device_id, 0)) + 1
+		if not _stamps.has(r.device_id):
+			_stamps[r.device_id] = []
+		_stamps[r.device_id].append(r.timestamp_ms))
 	p.devices_discovered.connect(func(devices: Array) -> void: _discovered = devices)
 	p.connection_changed.connect(func(id: String, c: bool) -> void: _conn_events.append([id, c]))
 	_providers.append(p)
@@ -260,6 +282,7 @@ func _make_provider(app_port: int, bridge_port: int) -> BleSensorProvider:
 
 func _reset_events() -> void:
 	_readings.clear()
+	_stamps.clear()
 	_discovered = []
 	_conn_events.clear()
 
@@ -315,6 +338,55 @@ func _port_free(port: int) -> bool:
 ## ブリッジ側のポートが空いたか（Python が使っていたポートを Godot から bind してみる）。
 func _port_free_for_bridge(port: int) -> bool:
 	return _port_free(port)
+
+
+# --- 時刻の付け方（SampleClock） -------------------------------------------------
+
+func _phase_sample_clock() -> void:
+	print("[smoke] 0. SampleClock（BLE サンプルの時刻）")
+	var c := BleSensorProvider.SampleClock.new()
+	_check(Array(c.stamp(2, 1000)) == [990, 1000], "0: 既定 100Hz で 10ms ずつさかのぼる")
+	_check(Array(c.stamp(2, 1020)) == [1010, 1020], "0: 次のデータグラムも続けて付く")
+	_check(Array(c.stamp(3, 1025)) == [1021, 1022, 1025], "0: 前の時刻と重なるときは 1ms ずつ後ろへずらす（単調増加）")
+	c.set_rate_hint(50.0)
+	_check(Array(c.stamp(2, 1100)) == [1080, 1100], "0: デバイスが知らせたレート（50Hz）を使う")
+
+	# 実際の受信レート（200Hz を 20ms ごとに4個ずつ）を測って間隔を合わせる
+	var m := BleSensorProvider.SampleClock.new()
+	var t := 5000
+	var all: Array = []
+	for i in 80:
+		t += 20
+		all.append_array(Array(m.stamp(4, t)))
+	_check(absf(m.interval_ms - 5.0) < 0.5, "0: 受信レートから間隔を推定（%.2f ms）" % m.interval_ms)
+	var tail: Array = all.slice(all.size() - 8)
+	_check(tail == [t - 35, t - 30, t - 25, t - 20, t - 15, t - 10, t - 5, t], "0: 推定後は 5ms 間隔: %s" % str(tail))
+	var strictly := true
+	for i in range(1, all.size()):
+		strictly = strictly and all[i] > all[i - 1]
+	_check(strictly, "0: すべて単調増加")
+
+	# 一時停止のような長い空白をはさんでも、間隔の推定が狂わない
+	t += 3000
+	m.stamp(4, t)
+	t += 20
+	m.stamp(4, t)
+	_check(absf(m.interval_ms - 5.0) < 0.5, "0: 空白の後も推定が保たれる（%.2f ms）" % m.interval_ms)
+
+
+## 受け取ったサンプルの時刻が単調増加で、間隔の中央値が範囲内か。
+func _check_stamps(address: String, min_ms: float, max_ms: float, label: String) -> void:
+	var stamps: Array = _stamps.get(address, [])
+	var increasing := stamps.size() > 10
+	var diffs: Array = []
+	for i in range(1, stamps.size()):
+		increasing = increasing and stamps[i] > stamps[i - 1]
+		diffs.append(stamps[i] - stamps[i - 1])
+	diffs.sort()
+	var median: float = diffs[diffs.size() / 2] if not diffs.is_empty() else 0.0
+	_check(increasing, "%s: 時刻が単調増加（%d 件、同じ時刻なし）" % [label, stamps.size()])
+	_check(median >= min_ms and median <= max_ms,
+			"%s: 時刻の間隔の中央値 %.1f ms（%.0f〜%.0f ms）" % [label, median, min_ms, max_ms])
 
 
 func _check(condition: bool, message: String) -> void:

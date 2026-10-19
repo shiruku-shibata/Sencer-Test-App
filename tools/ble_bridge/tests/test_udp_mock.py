@@ -129,6 +129,8 @@ class MockBridgeUdpTest(unittest.TestCase):
         self.client.pump(1.0)
         lines1 = self.lines_for(MOCK1)
         lines2 = self.lines_for(MOCK2)
+        self.assertTrue(lines1[0].startswith("# model=MOCK name=M5-Sensor-MOCK1 rate=100 ble=1"),
+                        "購読直後の最初の行は情報行: %r" % lines1[:1])
         csv1 = [line for line in lines1 if not line.startswith("#")]
         self.assertGreater(len(csv1), 50, "100Hz 前後で届くはず")
         self.assertGreater(len(lines2), 50)
@@ -139,7 +141,8 @@ class MockBridgeUdpTest(unittest.TestCase):
         # PAUSE で止まり、RESUME で再開する
         self.client.send({"cmd": "send", "address": MOCK1, "line": "PAUSE"})
         self.client.pump(0.3)
-        self.lines_for(MOCK1)
+        # 応答は実機ファームと同じ形式で、サンプル行の途中に割り込まず1行として届く
+        self.assertIn("# ok=PAUSE sending=0", self.lines_for(MOCK1))
         self.client.pump(0.5)
         paused = [line for line in self.lines_for(MOCK1) if not line.startswith("#")]
         self.assertEqual(paused, [])

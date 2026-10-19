@@ -1,37 +1,106 @@
 # センサーテストアプリ（Sensor Test App）
 
-ゲーム制作で使用するセンサー（M5StickC Plus2）の加速度・ジャイロデータを、PC上でリアルタイムに
-可視化・記録・検証するためのローカルテストツールです。
+ゲーム制作で使う M5 製品（M5StickC Plus2 など）の IMU（加速度・ジャイロ）を PC で受信し、
+**「どの軸が、どれくらいの値を超えたら“動作した”とみなすか」＝しきい値** を、
+実機を振りながら測定・調整・保存・共有するためのローカルツールです（Godot 4.4 系）。
 
-現在は **開発ステップ3（実装・試作品作成）の第1弾**。P1機能（有線シリアル接続 → モニタリング →
-CSV記録 ＋ アプリ内マニュアル）を実装しています。
+![しきい値測定画面](docs/images/threshold_screen.png)
 
-## 使い方（アプリ）
+## できること
 
-1. Godot 4.4 系でこのフォルダをプロジェクトとして開き、実行（F5）します。
-2. 「デバイス管理」画面で **スキャン** を押します。
-3. 一覧からポート（macOSでは `/dev/cu.*`）を選び **接続** します。
-   - 実機が無い場合は、**デモ**と表示される `demo-01` / `demo-02` に接続すればダミーデータで一通り試せます。
-4. 「モニタリング」画面で波形を確認し、**● 記録開始** でCSV記録を開始します。
-5. 記録したCSVは「ログ管理」画面から確認・削除できます（保存先は `user://logs`）。
+| 機能 | 内容 |
+|---|---|
+| 接続 | **有線（USBシリアル）** または **BLE**。実機が無くても**デモ**デバイスで一通り試せる |
+| 対象機器 | M5StickC Plus2 / Plus / 初代、M5Stack Core2 / CoreS3、AtomS3、ATOM Matrix（[ファームウェア](firmware/m5stick_sender/README.md)） |
+| モニタリング | 波形と数値のリアルタイム表示。**指定した軸だけ**表示・CSV記録 |
+| **しきい値測定** | ①静止測定（ノイズ）→ ②動作の試行（ピーク）→ ③推奨しきい値と判定品質 → ④判定テスト → ⑤保存・共有 |
+| 軸指定 | 加速度 X/Y/Z、ジャイロ X/Y/Z、合成加速度、合成角速度から、使う軸だけを選んで計測・判定 |
+| 共有 | しきい値を **JSON プロファイル**で保存・コピー。ゲーム側に貼れる **C++ / GDScript / C# の判定コード**も出力 |
+| マニュアル | アプリ内の「マニュアル」画面に手順・軸の選び方・BLE の設定・トラブル対処 |
 
-## 実機を使う場合
+## はじめかた（実機なし・5分）
 
-1. `firmware/m5stick_sender/` を PlatformIO で開き、M5StickC Plus2 に書き込みます（`pio run -t upload`）。
-2. USBケーブル（データ通信対応）でMacに接続します。
-3. アプリで **スキャン → 接続** します。
+1. [Godot 4.4 以降](https://godotengine.org/) でこのフォルダをプロジェクトとして開き、実行（F5）。
+2. 「デバイス管理」で **スキャン** → `demo-01` を **接続**。
+3. 「しきい値測定」で軸（例: ジャイロ Z）を選び、**静止測定 → 試行（Spaceキーで開始/終了）×5 → 推奨値を適用 → 判定テスト** の順に進める。
+4. ⑤で名前を付けて **保存**、または **JSONをコピー / コードをコピー**。
 
-## 有線接続の仕組み
+BLE の流れを実機なしで試すときは、BLE ブリッジの疑似デバイスを使います:
 
-Godotには標準のシリアル通信機能がありません。本アプリでは2通りの経路を用意しています。
+```bash
+SENSOR_BLE_MOCK=1 /Applications/Godot.app/Contents/MacOS/Godot --path .   # macOS の例
+```
 
-| 経路 | 実装 | 対応OS | 備考 |
-|---|---|---|---|
-| OS標準コマンド経由（既定） | `src/core/pipe_serial_sensor_provider.gd` | macOS / Linux | `stty` + `cat` を使用。外部アドオン不要 |
-| シリアル通信アドオン経由 | `src/core/serial_port_adapter.gd` | 全OS | GdSerial等を導入した場合に自動で切り替わる |
+デバイス管理画面に `M5-Sensor-MOCK1` / `M5-Sensor-MOCK2`（方式: BLE）が出ます。
 
-アドオンが導入されていればそちらを優先し、無ければOS標準コマンド経由で動作します（`SensorManager._ready()`）。
-Windowsで有線を使う場合はアドオンの導入が必要です。
+## 実機を使う
+
+1. **ファームウェアを書き込む**（PlatformIO）: 手順と機種ごとの env 名は [firmware/m5stick_sender/README.md](firmware/m5stick_sender/README.md)。
+   ```bash
+   cd firmware/m5stick_sender
+   pio run -e m5stickc_plus2 -t upload
+   ```
+2. **有線**: USB ケーブル（データ通信対応）で接続し、アプリで スキャン → 接続（macOS は `/dev/cu.*`）。
+3. **BLE**: 最初に一度だけブリッジをセットアップします（Python 3.9 以上が必要）。
+   ```bash
+   sh tools/ble_bridge/setup.sh        # Windows は tools\ble_bridge\setup.bat
+   ```
+   以後はアプリがブリッジを自動起動します。デバイスは `M5-Sensor-XXXX` という名前で見えます。
+   macOS で Bluetooth の権限エラーになる場合は、デバイス管理画面の **「手動起動で接続」** に表示されるコマンドをターミナルで実行してください。
+   詳しくは [tools/ble_bridge/README.md](tools/ble_bridge/README.md)。
+
+## しきい値の考え方
+
+```
+ノイズ上限   = max(静止中の最大値, 平均 + 4σ)
+最弱ピーク   = 各試行のピークのうち最も小さいもの
+推奨しきい値 = ノイズ上限 + (最弱ピーク − ノイズ上限) × ratio      （ratio は画面のスライダー）
+判定品質     = good / tight（余裕が小さい）/ overlap（静止と動作を区別できない）/ insufficient（測定不足）
+```
+
+判定は **ヒステリシス**（しきい値付近での連続判定を防ぐ）と **不応期**（1回の動作で1回だけ判定）込みで行い、
+保存したプロファイルから出力するゲーム用コードも同じ判定式になります。値は生の値（重力分などを補正しない）です。
+
+## 構成
+
+```
+ M5デバイス (firmware/m5stick_sender)   CSV 1行1サンプル "ax,ay,az,gx,gy,gz"
+   ├─ USBシリアル ──────────────► PipeSerialSensorProvider / SerialSensorProvider
+   └─ BLE (Nordic UART) ─► BLEブリッジ (tools/ble_bridge, Python+bleak) ─UDP─► BleSensorProvider
+                                                         │
+                         SensorManager ◄─────────────────┘（通信方式の違いはここで吸収）
+              ┌──────────────┼───────────────────┐
+        MonitorScreen   ThresholdScreen       LoggingService
+                              │
+        ThresholdAnalyzer / ThresholdDetector / ThresholdProfile / AxisFilter
+```
+
+```
+src/core/       ロジック層（UIに依存しない）
+  sensor_axis.gd            軸の定義（全機能がこれを通して軸を扱う）
+  threshold_*.gd            しきい値の解析・判定・ルール・プロファイル
+  axis_filter.gd            軸ごとの移動平均
+  logging_service.gd / log_replay.gd   軸指定CSV記録と読み込み
+  *_provider.gd             通信方式ごとの受信（有線 / BLE / デモ）
+  sensor_manager.gd         Provider の集約・配信
+src/ui/         画面とウィジェット（コードで組み立て。文言は ui_strings.gd に集約）
+tests/          自動テスト（Godot ヘッドレス）
+tools/ble_bridge/   BLE ブリッジ（Python）と、そのテスト
+firmware/m5stick_sender/   M5 用送信ファームウェア（PlatformIO）
+docs/           設計書・画像
+```
+
+設計の背景・チーム分担・インターフェース契約は [docs/DESIGN_P2.md](docs/DESIGN_P2.md) を参照してください。
+
+## テスト
+
+```bash
+GODOT=/Applications/Godot.app/Contents/MacOS/Godot          # 環境に合わせて
+$GODOT --headless --path . -s res://tests/run_tests.gd                         # ロジック（しきい値・ログ・パーサ等）
+$GODOT --headless --path . -s res://tools/ble_bridge/tests/godot_ble_smoke.gd  # アプリ ⇔ BLEブリッジ結合
+python3 -m unittest discover -s tools/ble_bridge/tests                         # BLEブリッジ単体
+cd firmware/m5stick_sender && pio test -e native                               # ファームウェアの純粋ロジック
+```
 
 ## ビルド（配布用）
 
@@ -40,40 +109,15 @@ Windowsで有線を使う場合はアドオンの導入が必要です。
 godot --headless --export-release "macOS" build/SensorTestApp.zip
 ```
 
-macOSでは未署名配布になるため、受け取った側で初回に右クリック →「開く」が必要です。
-開けない場合は `xattr -dr com.apple.quarantine "Sensor Test App.app"` を実行してください。
+Windows / Linux のプリセットもあります。BLE を使う場合は、配布物の実行ファイルと同じ場所に
+`tools/ble_bridge/` の中身を `ble_bridge/` として添えてください（`.venv` は含めない。手順は tools/ble_bridge/README.md）。
+macOS では未署名配布のため、初回は右クリック →「開く」、または `xattr -dr com.apple.quarantine "Sensor Test App.app"`。
 
-## フォルダ構成
+## 既知の制限
 
-```
-src/
-├── core/                            ロジック層（UIに依存しない）
-│   ├── sensor_reading.gd            1サンプル分のデータ
-│   ├── sensor_device.gd             デバイス情報
-│   ├── sensor_provider.gd           通信方式ごとの基底クラス
-│   ├── pipe_serial_sensor_provider.gd  有線（OS標準コマンド経由）
-│   ├── serial_sensor_provider.gd    有線（アドオン経由）
-│   ├── serial_port_adapter.gd       アドオンへの薄いラッパー
-│   ├── mock_sensor_provider.gd      ダミーデータ（実機なしの確認用）
-│   ├── sensor_data_parser.gd        受信文字列 → SensorReading
-│   ├── device_registry.gd           デバイス一覧とニックネーム管理
-│   ├── sensor_manager.gd            Providerの集約・配信
-│   └── logging_service.gd           CSV記録
-└── ui/
-    ├── main.gd / main.tscn          サイドバー・画面切り替え・ステータスバー
-    ├── ui_strings.gd                UI文言の一元管理
-    ├── screens/                     各画面（S1/S2/S3/S5）
-    └── widgets/waveform_view.gd     波形描画（Godot標準の _draw のみ）
-
-firmware/m5stick_sender/             M5StickC Plus2 用送信ファームウェア（PlatformIO）
-```
-
-## 未実装（次段階 P2 以降）
-
-- BLE接続
-- キャリブレーション画面（波形上のドラッグによるしきい値設定・判定シミュレーション）
-- 複数デバイスの同時波形表示（現在は対象デバイスを1台選択して表示）
-- 設定画面
+- 実機（M5 各機種）での BLE 接続・通知・コマンドは未検証（ビルド・単体テスト・疑似デバイスでの結合テストまで実施済み）。
+- Windows / Linux での実行は未検証（パス処理などのコード対応のみ）。
+- macOS では BLE の ID が Mac ごとに異なる UUID のため、BLE デバイスのニックネームは Mac ごとに付け直しが必要。
 
 ## ライセンス
 
