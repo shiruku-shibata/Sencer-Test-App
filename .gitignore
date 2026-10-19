@@ -10,3 +10,5 @@ __pycache__/
 *.pyc
 # PlatformIO
 .pio/
+# Claude Code の作業用 worktree
+.claude/
