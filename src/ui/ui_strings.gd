@@ -342,24 +342,27 @@ macOS では ~/Library/Application Support/Godot/app_userdata/Sensor Test App/th
 
 	"対応機種とファームウェア": """[b]対応機種とファームウェア[/b]
 
-M5Unified が対応する IMU（6軸センサー）付きの M5 製品で使えます。
-・M5StickC Plus2（主な対象）
-・M5StickC Plus
-・M5StickC
-・M5Stack Core2
-・M5Stack CoreS3
-・AtomS3
-・Atom Matrix
+IMU（6軸センサー）付きの M5 製品で使えます。機種は起動時にファームウェアが自動で判別します。
+書き込むときは、機種に合った「環境名（env）」を選びます。
+
+[table=3][cell padding=0,2,24,2][b]機種[/b][/cell][cell padding=0,2,24,2][b]環境名（-e）[/b][/cell][cell padding=0,2,0,2][b]一時停止/再開の操作[/b][/cell][cell padding=0,2,24,2]M5StickC Plus2（主な対象）[/cell][cell padding=0,2,24,2]m5stickc_plus2（既定）[/cell][cell padding=0,2,0,2]A ボタン（M5 ロゴ）[/cell][cell padding=0,2,24,2]M5StickC Plus[/cell][cell padding=0,2,24,2]m5stickc_plus[/cell][cell padding=0,2,0,2]A ボタン[/cell][cell padding=0,2,24,2]M5StickC（初代）[/cell][cell padding=0,2,24,2]m5stickc[/cell][cell padding=0,2,0,2]A ボタン[/cell][cell padding=0,2,24,2]M5Stack Core2[/cell][cell padding=0,2,24,2]m5stack_core2[/cell][cell padding=0,2,0,2]画面下の左タッチボタン[/cell][cell padding=0,2,24,2]M5Stack CoreS3[/cell][cell padding=0,2,24,2]m5stack_cores3[/cell][cell padding=0,2,0,2]画面をタップ[/cell][cell padding=0,2,24,2]M5Stack AtomS3[/cell][cell padding=0,2,24,2]m5stack_atoms3[/cell][cell padding=0,2,0,2]画面（ボタン）を押す[/cell][cell padding=0,2,24,2]ATOM Matrix[/cell][cell padding=0,2,24,2]m5stack_atom[/cell][cell padding=0,2,0,2]画面（ボタン）を押す[/cell][/table]
+
+[color=#e8c547]注意[/color]: [b]CoreS3 SE[/b] と [b]ATOM Lite[/b] は IMU を積んでいないため使えません。
+書き込むと画面に [b]IMU ERROR[/b]（ATOM は LED が赤）と出て、データの代わりに「# error=imu_not_found」という情報行を5秒おきに送ります。
 
 [b]ファームウェアの書き込み[/b]
 1. PC に PlatformIO（VS Code の拡張機能、または pio コマンド）を入れます。
-2. firmware/m5stick_sender を PlatformIO で開きます。
-3. 使う機種に合った環境（env）を選んで書き込みます。
-	[code]pio run -e <環境名> -t upload[/code]
-	機種ごとの環境名は firmware/m5stick_sender/platformio.ini を見てください。
-4. ファームウェアは有線（USBシリアル）でも BLE でも同じ形式のデータを送ります。
+2. USB ケーブル（データ通信対応のもの）でデバイスをつなぎます。
+3. ターミナルで firmware/m5stick_sender に移動し、機種の環境名を指定して書き込みます。
+	[code]pio run -e m5stickc_plus2 -t upload[/code]
+	複数台つないでいるときは、末尾に --upload-port /dev/cu.usbserial-XXXX（Windows は COM5 など）を付けます。
+4. 書き込むと、有線（USBシリアル）と BLE の両方でデータを送り始めます。
+	画面には BLE のデバイス名（M5-Sensor-XXXX）・送信状態・レートが出ます。
+・CoreS3 / AtomS3 で書き込みに失敗するときは、側面のリセットボタンを2〜3秒長押しして書き込みモードにしてから、もう一度実行します。
+・詳しい手順やトラブル対処は firmware/m5stick_sender/README.md にあります。
 
 [b]機種による違い[/b]
+・本体の操作（上の表）で送信を一時停止／再開できます。一時停止中は画面に PAUSED と出ます。
 ・軸の向きは機種によって違います。モニタリング画面で確かめてください。
 ・センサーには個体差があります。しきい値は、ゲームで使う機種（できれば同じ個体）で測るのがおすすめです。
 ・プロファイルには、測定に使ったデバイス名と受信レートが記録されます。""",
@@ -369,6 +372,12 @@ M5Unified が対応する IMU（6軸センサー）付きの M5 製品で使え�
 [b]有線でポートが出てこない[/b]
 macOSでは /dev/cu.* を使用します（/dev/tty.* ではありません）。
 USBケーブルが充電専用でないか、デバイスの電源が入っているかも確認してください。
+
+[b]デバイスの画面に IMU ERROR と出る（波形が流れない）[/b]
+IMU の無い機種（CoreS3 SE / ATOM Lite）か、書き込むときの環境名の選び間違いです。「対応機種とファームウェア」ページを見てください。
+
+[b]デバイスの画面に PAUSED と出る[/b]
+本体のボタン（機種による）で一時停止しています。もう一度押すと再開します。
 
 [b]BLE のデバイスが出てこない[/b]
 「BLEで接続する」ページの「うまくいかないとき」を見てください。
