@@ -111,6 +111,20 @@ func read_lines() -> PackedStringArray:
 	return lines
 
 
+## 1行（改行付き）を書き込む。アドオンの書き込みAPI名の違いを吸収する。
+func write_line(text: String) -> bool:
+	if _port == null:
+		return false
+	var line := text.strip_edges() + "\n"
+	if _port.has_method("write_string"):
+		_port.call("write_string", line)
+		return true
+	if _port.has_method("write"):
+		_port.call("write", line.to_utf8_buffer())
+		return true
+	return false
+
+
 func _set_if_present(property: String, value: Variant) -> void:
 	if _port == null:
 		return
