@@ -108,6 +108,7 @@ data.append_array(gen.gesture(150, Vector3.ZERO, Vector3(0, 0, 250)))   # gZ を
 | `test_threshold_rule.gd` | `ThresholdRule`（3方向の判定と解除・線の位置・辞書の往復） |
 | `test_threshold_detector.gd` | `ThresholdDetector`（ヒステリシス・不応期・ANY/ALL・平滑化・無効ルール・reset） |
 | `test_threshold_analyzer.gd` | `ThresholdAnalyzer`（静止測定の自動終了・試行・推奨値の各 quality・向きの推定） |
+| `test_analyzer_cancel_restore.gd` | `ThresholdAnalyzer.cancel()` / `restore_measurement()`、`ThresholdProfile.apply_measurement_to()` ほか |
 | `test_threshold_profile.gd` | `ThresholdProfile`（JSON 往復・不正入力・保存/一覧/削除・コード生成。生成した GDScript は実際にコンパイルして判定器と一致するか確認） |
 | `test_logging_service.gd` | `LoggingService`（軸指定 CSV・既定の6軸） |
 | `test_log_replay.gd` | `LogReplay`（P1 形式・軸指定形式・壊れた行） |
