@@ -2,6 +2,7 @@ class_name MockSensorProvider
 extends SensorProvider
 ## 実機やアドオンが無くても動作確認できるダミーデータ供給元。
 ## UIの確認、しきい値調整の練習、開発中の回帰確認に使う。
+## 波形は「静止中の小さなノイズ ＋ 決まったリズムの振り」（詳しくは DEMO_GESTURE_MS 付近のコメント）。
 ##
 ## サンプルの時刻（timestamp_ms）は 10ms 刻みの「仮想時刻」:
 ##   ・1回の poll() で複数サンプルを出しても、それぞれ 10ms ずつずれた時刻になる
@@ -138,19 +139,70 @@ func _info_line(device_id: String) -> String:
 	]
 
 
+## デモの「振り」: しきい値測定の練習ができるよう、決まったリズムで振る（ランダムには振らない）。
+##   ・静止中は小さなノイズだけ（手で構えている程度の揺れ）
+##   ・DEMO_GESTURE_PERIOD_MS ごとに DEMO_GESTURE_MS の振りを1回（gZ・gX・aX・aZ、つまり |a| |g| も動く）。
+##     強さは DEMO_STRENGTHS の順に少しずつ変わる（「一番弱い振り」が意味を持つように）
+##   ・hold_still(ms): その間は振らない（ThresholdScreen が静止測定の開始時に呼ぶ）
+##   ・gesture_soon(ms): その時間の後に1回振る（ThresholdScreen が試行の開始時に呼ぶ）
+## 時刻はサンプルの timestamp_ms（仮想時刻）で数えるので、開いている全デバイスで同じタイミングになる。
+const DEMO_GESTURE_MS := 240
+const DEMO_GESTURE_PERIOD_MS := 3500
+const DEMO_FIRST_GESTURE_MS := 2000
+const DEMO_AFTER_QUIET_MS := 600
+const DEMO_STRENGTHS := [1.0, 0.8, 1.15, 0.9, 1.05, 0.85]
+
+var _gesture_start_ms := -1         ## 次の（または実行中の）振りの開始時刻（-1 = まだ決めていない）
+var _gesture_count := 0
+var _quiet_until_ms := -1
+
+
+## デモ: これから duration_ms の間は振らない（静止測定用）。実行中の振りも止める。
+func hold_still(duration_ms: int) -> void:
+	var now := maxi(_clock_ms, 0)
+	_quiet_until_ms = now + maxi(0, duration_ms)
+	_gesture_start_ms = maxi(_gesture_start_ms, _quiet_until_ms + DEMO_AFTER_QUIET_MS)
+
+
+## デモ: delay_ms 後に1回振る（試行用）。振っている最中・振らない期間中なら何もしない。
+func gesture_soon(delay_ms: int) -> void:
+	var now := maxi(_clock_ms, 0)
+	if now < _quiet_until_ms or _gesture_active(now):
+		return
+	_gesture_start_ms = now + maxi(0, delay_ms)
+
+
+## その時刻に振っている最中か。
+func _gesture_active(ts: int) -> bool:
+	return _gesture_start_ms >= 0 and ts >= _gesture_start_ms and ts < _gesture_start_ms + DEMO_GESTURE_MS
+
+
+## その時刻の振りの大きさ（0 = 静止。振りの最中は 0 → 強さ → 0 の半周期の正弦波）。
+func _gesture_amount(ts: int) -> float:
+	if _gesture_start_ms < 0:
+		_gesture_start_ms = ts + DEMO_FIRST_GESTURE_MS
+	if ts >= _gesture_start_ms + DEMO_GESTURE_MS:
+		# 振り終わった → 次を予約（一時停止などで大きく飛んだら、今から数え直す）
+		_gesture_count += 1
+		_gesture_start_ms += DEMO_GESTURE_PERIOD_MS
+		if ts >= _gesture_start_ms:
+			_gesture_start_ms = ts + DEMO_GESTURE_PERIOD_MS
+	if not _gesture_active(ts):
+		return 0.0
+	var strength: float = DEMO_STRENGTHS[_gesture_count % DEMO_STRENGTHS.size()]
+	return strength * sin(PI * float(ts - _gesture_start_ms + SAMPLE_INTERVAL_MS) / float(DEMO_GESTURE_MS + SAMPLE_INTERVAL_MS))
+
+
 func _make_reading(device_id: String, timestamp_ms: int) -> SensorReading:
-	# ときどき大きな振り（ジェスチャー相当のピーク）を混ぜる
-	var spike := 0.0
-	if randf() < 0.012:
-		spike = randf_range(0.6, 2.2)
+	var k := _gesture_amount(timestamp_ms)
 	var accel := Vector3(
-		sin(_phase) * 0.25 + randf_range(-0.04, 0.04) + spike,
-		0.98 + sin(_phase * 0.7) * 0.12 + randf_range(-0.03, 0.03),
-		cos(_phase * 1.3) * 0.18 + randf_range(-0.035, 0.035) - spike * 0.4
+		sin(_phase * 0.3) * 0.02 + randf_range(-0.02, 0.02) + 1.6 * k,
+		0.98 + randf_range(-0.015, 0.015),
+		randf_range(-0.02, 0.02) - 0.5 * k
 	)
 	var gyro := Vector3(
-		sin(_phase * 1.8) * 60.0 + randf_range(-7.0, 7.0) + spike * 120.0,
-		cos(_phase * 1.1) * 45.0 + randf_range(-6.0, 6.0),
-		sin(_phase * 0.5) * 30.0 + randf_range(-5.0, 5.0)
+		sin(_phase * 0.5) * 2.0 + randf_range(-3.0, 3.0) + 80.0 * k,
+		randf_range(-3.0, 3.0) - 40.0 * k,
+		sin(_phase * 0.2) * 3.0 + randf_range(-2.5, 2.5) + 260.0 * k
 	)
 	return SensorReading.new(device_id, timestamp_ms, accel, gyro)

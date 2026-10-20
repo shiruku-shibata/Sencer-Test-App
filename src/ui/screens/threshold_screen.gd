@@ -37,6 +37,8 @@ const LAMP_HOLD_MS := 250
 const LOG_DETECT_INTERVAL_MS := 80             ## ログ判定のやり直しの最短間隔（ドラッグ中に毎フレーム走らせない）
 const LOG_MAX_LISTED_FIRES := 20               ## ⑥に並べる判定位置の最大数
 const LOG_BASELINE_FOREVER_MS := 1 << 30       ## 取り込み時の静止測定は stop() で締めるので、時間では終わらせない
+const DEMO_QUIET_MARGIN_MS := 500              ## デモ: 静止測定の時間よりこれだけ長く振らないでもらう
+const DEMO_TRIAL_GESTURE_DELAY_MS := 400       ## デモ: 試行を始めてから振るまでの時間
 
 const COLOR_THRESHOLD := Color("ff6b6b")
 const COLOR_THRESHOLD_OFF := Color(1.0, 0.42, 0.42, 0.35)
@@ -1215,7 +1217,11 @@ func _on_baseline_pressed() -> void:
 	if _selected_id.is_empty() or _analyzer.phase() != ThresholdAnalyzer.Phase.IDLE:
 		return
 	_baseline_progress.value = 0.0
-	_analyzer.start_baseline(BASELINE_OPTIONS[_baseline_seconds.selected] * 1000)
+	var duration_ms: int = BASELINE_OPTIONS[_baseline_seconds.selected] * 1000
+	_analyzer.start_baseline(duration_ms)
+	var demo := _demo_provider()
+	if demo != null:
+		demo.hold_still(duration_ms + DEMO_QUIET_MARGIN_MS)   # デモは静止測定の間は振らない
 
 
 func _toggle_trial() -> void:
@@ -1225,6 +1231,18 @@ func _toggle_trial() -> void:
 		ThresholdAnalyzer.Phase.IDLE:
 			if not _selected_id.is_empty():
 				_analyzer.start_trial(0)
+				var demo := _demo_provider()
+				if demo != null:
+					demo.gesture_soon(DEMO_TRIAL_GESTURE_DELAY_MS)   # デモは試行を始めると少し後に1回振る
+
+
+## 選んでいるデバイスがデモ（MockSensorProvider）なら、その Provider。違えば null。
+## デモの振りを測定の手順に合わせるためだけに使う（実機には関係しない）。
+func _demo_provider() -> MockSensorProvider:
+	var device := _manager.registry.get_device(_selected_id)
+	if device == null or device.mode != SensorDevice.Mode.MOCK:
+		return null
+	return _manager.get_provider(SensorDevice.Mode.MOCK) as MockSensorProvider
 
 
 ## Space キーで試行の開始/終了。文字入力中（LineEdit・SpinBox）は通常の入力として扱う。
@@ -1420,7 +1438,20 @@ func _refresh_recommendations() -> void:
 	_update_all_lines()
 
 
+## 「推奨値を適用」。品質が「重なり」の軸があれば、静止中でも判定されてしまうので確認してから適用する。
 func _apply_recommendation() -> void:
+	var overlapped := PackedStringArray()
+	for axis in _axes:
+		var direction := int(_directions.get(axis, _default_direction(axis)))
+		if str(_analyzer.recommend(axis, direction, _ratio).get("quality", "")) == "overlap":
+			overlapped.append(SensorAxis.label(axis))
+	if overlapped.is_empty():
+		_apply_recommendation_now()
+	else:
+		_ask(UIStrings.TH_CONFIRM_APPLY_OVERLAP % "、".join(overlapped), _apply_recommendation_now)
+
+
+func _apply_recommendation_now() -> void:
 	var applied := 0
 	for axis in _axes:
 		var direction := int(_directions.get(axis, _default_direction(axis)))
