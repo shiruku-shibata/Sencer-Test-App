@@ -28,6 +28,8 @@ const FORMAT_VERSION := 1
 const APP_NAME := "Sensor Test App"
 ## 保存ファイル名（拡張子を除く）の最大文字数
 const MAX_FILE_NAME_LENGTH := 64
+## sample_rate_hz が不明（0）のとき、生成コードが仮定するサンプルレート（ファームの既定）
+const FALLBACK_SAMPLE_RATE_HZ := 100.0
 const _WINDOWS_RESERVED := ["CON", "PRN", "AUX", "NUL",
 		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
 		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"]
@@ -361,6 +363,12 @@ func _snippet_header(c: String) -> String:
 	lines.append("%s 値は生の値（重力分を引かない）。加速度は G、角速度は deg/s。" % c)
 	lines.append("%s 組み合わせ: %s / 平滑化: %d サンプル移動平均 / 不応期: %d ms" % [
 			c, ThresholdDetector.combine_label(combine), smoothing_window, _refractory_ms()])
+	if has_sample_rate():
+		lines.append("%s 測定時のサンプルレート: %s Hz（判定は %d ms ごとに値を読む前提。平滑化の効き方が変わらないよう、ゲーム側も同じ間隔で読む）"
+				% [c, String.num(sample_rate_hz, 1), sample_interval_ms()])
+	else:
+		lines.append("%s 測定時のサンプルレートが不明なため、%d Hz（%d ms ごと）で値を読む前提にしています"
+				% [c, int(FALLBACK_SAMPLE_RATE_HZ), sample_interval_ms()])
 	var disabled := 0
 	for r in rules:
 		if r.enabled:
@@ -387,6 +395,9 @@ func _snippet_cpp(active: Array[ThresholdRule]) -> String:
 //     M5.update();
 //     if (detector.update(millis())) { /* 動作した！ */ }
 //   }
+// update() は loop() で何度呼んでもよい。測定時と同じ SAMPLE_INTERVAL_MS ごとにだけ IMU を読む
+// （移動平均はサンプル数で数えるので、読む頻度が違うと平滑化の効き方が変わり、判定がずれるため）。
+// 値を自分で読んで feed() に渡す場合も、SAMPLE_INTERVAL_MS ごとに1回渡すこと。
 #include <M5Unified.h>
 #include <math.h>
 #include <stdint.h>
@@ -409,6 +420,7 @@ static const int RULE_COUNT = %d;
 static const bool COMBINE_ALL = %s;        // false: どれか1つ / true: すべて同時
 static const uint32_t REFRACTORY_MS = %d;   // 一度判定したら、この時間は次の判定をしない
 static const int SMOOTHING_WINDOW = %d;     // 移動平均のサンプル数（1 = 平滑化なし）
+static const uint32_t SAMPLE_INTERVAL_MS = %d;  // 値を読む間隔（%s）
 
 // 軸の値の取り出し方
 //   加速度 [G]     : M5.Imu.getAccelData(&ax, &ay, &az);  → AX, AY, AZ
@@ -431,14 +443,20 @@ inline float axisValue(Axis axis, const float a[3], const float g[3]) {
 class MotionDetector {
  public:
   // IMU から値を読んで判定する。動作が始まった瞬間だけ true を返す。
+  // loop() で何度呼んでもよい。SAMPLE_INTERVAL_MS ごとにだけ読み、それ以外は false を返す。
   bool update(uint32_t nowMs) {
+    if (started_ && (int32_t)(nowMs - nextSampleMs_) < 0) return false;  // まだ次に読む時刻ではない
+    // 初回と、大きく遅れたとき（loop() が重い等）は、まとめて追いつかずに今から数え直す
+    if (!started_ || (int32_t)(nowMs - nextSampleMs_) >= (int32_t)SAMPLE_INTERVAL_MS) nextSampleMs_ = nowMs;
+    started_ = true;
+    nextSampleMs_ += SAMPLE_INTERVAL_MS;
     float a[3], g[3];
     M5.Imu.getAccelData(&a[0], &a[1], &a[2]);
     M5.Imu.getGyroData(&g[0], &g[1], &g[2]);
     return feed(a, g, nowMs);
   }
 
-  // 値を直接渡して判定する（a: 加速度 G, g: 角速度 deg/s）。
+  // 値を直接渡して判定する（a: 加速度 G, g: 角速度 deg/s）。SAMPLE_INTERVAL_MS ごとに1回呼ぶこと。
   bool feed(const float a[3], const float g[3], uint32_t nowMs) {
     int activeCount = 0;
     for (int i = 0; i < RULE_COUNT; ++i) {
@@ -497,11 +515,13 @@ class MotionDetector {
   bool combined_ = false;
   bool hasFired_ = false;
   uint32_t lastFireMs_ = 0;
+  bool started_ = false;
+  uint32_t nextSampleMs_ = 0;
 };
 
 }  // namespace motion_threshold
 """ % [rule_lines, active.size(), "true" if combine == ThresholdDetector.Combine.ALL else "false",
-		_refractory_ms(), maxi(1, smoothing_window)]
+		_refractory_ms(), maxi(1, smoothing_window), sample_interval_ms(), _rate_text()]
 
 
 func _snippet_gdscript(active: Array[ThresholdRule]) -> String:
@@ -513,8 +533,10 @@ func _snippet_gdscript(active: Array[ThresholdRule]) -> String:
 	return """# 使い方（Godot 4）:
 #   このコードを motion_detector.gd として保存し、
 #   var detector = preload("res://motion_detector.gd").new()
-#   if detector.feed(accel, gyro, Time.get_ticks_msec()):
+#   if detector.feed(accel, gyro, Time.get_ticks_msec()):   # 値が届くたびに（測定時と同じ頻度で）
 #       print("動作した！")
+#   毎フレーム最新の値を渡すなら feed() の代わりに update()（SAMPLE_INTERVAL_MS ごとにだけ判定する）。
+#   移動平均はサンプル数で数えるので、測定時と違う頻度で feed() すると平滑化の効き方が変わり、判定がずれる。
 # 軸の値の取り出し方: accel = Vector3(ax, ay, az) [G], gyro = Vector3(gx, gy, gz) [deg/s]
 #   （M5 から届く CSV 行 "ax,ay,az,gx,gy,gz" の順）。合成値は accel.length() / gyro.length()
 extends RefCounted
@@ -529,18 +551,31 @@ const RULES := [
 const COMBINE_ALL := %s        ## false: どれか1つ / true: すべて同時
 const REFRACTORY_MS := %d       ## 一度判定したら、この時間は次の判定をしない
 const SMOOTHING_WINDOW := %d    ## 移動平均のサンプル数（1 = 平滑化なし）
+const SAMPLE_INTERVAL_MS := %d  ## 値を読む間隔（%s）
 
 var _active: Array[bool] = []
 var _buffers: Array = []
 var _combined := false
 var _has_fired := false
 var _last_fire_ms := 0
+var _next_sample_ms := -1
 
 
 func _init() -> void:
 	for i in RULES.size():
 		_active.append(false)
 		_buffers.append([])
+
+
+## 何度呼んでもよい版。SAMPLE_INTERVAL_MS ごとにだけ feed() し、それ以外は false を返す。
+func update(accel: Vector3, gyro: Vector3, now_ms: int) -> bool:
+	if _next_sample_ms >= 0 and now_ms < _next_sample_ms:
+		return false  # まだ次に読む時刻ではない
+	# 初回と、大きく遅れたときは、まとめて追いつかずに今から数え直す
+	if _next_sample_ms < 0 or now_ms - _next_sample_ms >= SAMPLE_INTERVAL_MS:
+		_next_sample_ms = now_ms
+	_next_sample_ms += SAMPLE_INTERVAL_MS
+	return feed(accel, gyro, now_ms)
 
 
 ## 1サンプルを判定する。動作が始まった瞬間だけ true を返す。
@@ -609,7 +644,7 @@ func _smooth(i: int, v: float) -> float:
 		sum += x
 	return sum / buf.size()
 """ % [rule_lines, "true" if combine == ThresholdDetector.Combine.ALL else "false",
-		_refractory_ms(), maxi(1, smoothing_window)]
+		_refractory_ms(), maxi(1, smoothing_window), sample_interval_ms(), _rate_text()]
 
 
 func _snippet_csharp(active: Array[ThresholdRule]) -> String:
@@ -620,7 +655,9 @@ func _snippet_csharp(active: Array[ThresholdRule]) -> String:
 			_lit(r.threshold), _lit(r.hysteresis), r.summary()]
 	return """// 使い方（C# / Unity など）:
 //   var detector = new MotionDetector();
-//   if (detector.Feed(ax, ay, az, gx, gy, gz, nowMs)) { /* 動作した！ */ }
+//   if (detector.Feed(ax, ay, az, gx, gy, gz, nowMs)) { /* 動作した！ */ }   // 値が届くたびに（測定時と同じ頻度で）
+//   毎フレーム最新の値を渡すなら Feed の代わりに Update（SampleIntervalMs ごとにだけ判定する）。
+//   移動平均はサンプル数で数えるので、測定時と違う頻度で Feed すると平滑化の効き方が変わり、判定がずれる。
 // 軸の値の取り出し方: ax, ay, az = 加速度 [G] / gx, gy, gz = 角速度 [deg/s]
 //   （M5 から届く CSV 行 "ax,ay,az,gx,gy,gz" の順）。合成値は内部で sqrt(x*x + y*y + z*z) を計算する。
 using System;
@@ -652,6 +689,7 @@ public class MotionDetector
     private static readonly bool CombineAll = %s;      // false: どれか1つ / true: すべて同時
     public const long RefractoryMs = %d;              // 一度判定したら、この時間は次の判定をしない
     public const int SmoothingWindow = %d;            // 移動平均のサンプル数（1 = 平滑化なし）
+    public const long SampleIntervalMs = %d;          // 値を読む間隔（%s）
 
     private readonly bool[] _active = new bool[Rules.Length];
     private readonly float[,] _buf = new float[Rules.Length, SmoothingWindow];
@@ -660,8 +698,19 @@ public class MotionDetector
     private bool _combined;
     private bool _hasFired;
     private long _lastFireMs;
+    private long _nextSampleMs = -1;
 
     public bool IsActive => _combined;
+
+    /// <summary>何度呼んでもよい版。SampleIntervalMs ごとにだけ Feed し、それ以外は false を返す。</summary>
+    public bool Update(float ax, float ay, float az, float gx, float gy, float gz, long nowMs)
+    {
+        if (_nextSampleMs >= 0 && nowMs < _nextSampleMs) return false;  // まだ次に読む時刻ではない
+        // 初回と、大きく遅れたときは、まとめて追いつかずに今から数え直す
+        if (_nextSampleMs < 0 || nowMs - _nextSampleMs >= SampleIntervalMs) _nextSampleMs = nowMs;
+        _nextSampleMs += SampleIntervalMs;
+        return Feed(ax, ay, az, gx, gy, gz, nowMs);
+    }
 
     /// <summary>1サンプルを判定する。動作が始まった瞬間だけ true を返す。</summary>
     public bool Feed(float ax, float ay, float az, float gx, float gy, float gz, long nowMs)
@@ -733,7 +782,24 @@ public class MotionDetector
     }
 }
 """ % [rule_lines, "true" if combine == ThresholdDetector.Combine.ALL else "false",
-		_refractory_ms(), maxi(1, smoothing_window)]
+		_refractory_ms(), maxi(1, smoothing_window), sample_interval_ms(), _rate_text()]
+
+
+## 測定時のサンプルレートが分かっているか（sample_rate_hz > 0）。
+func has_sample_rate() -> bool:
+	return is_finite(sample_rate_hz) and sample_rate_hz > 0.0
+
+
+## 生成コードが値を読む間隔 [ms]（測定時のサンプルレートから。不明なら FALLBACK_SAMPLE_RATE_HZ）。
+func sample_interval_ms() -> int:
+	var rate := sample_rate_hz if has_sample_rate() else FALLBACK_SAMPLE_RATE_HZ
+	return maxi(1, roundi(1000.0 / rate))
+
+
+func _rate_text() -> String:
+	if has_sample_rate():
+		return "測定時 %s Hz" % String.num(sample_rate_hz, 1)
+	return "測定時のレートは不明。%d Hz と仮定" % int(FALLBACK_SAMPLE_RATE_HZ)
 
 
 # ------------------------------------------------------------ 内部

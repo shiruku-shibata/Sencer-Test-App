@@ -189,6 +189,16 @@ func _cases() -> Array:
 		exact.append_array(g13.gesture(100, Vector3.ZERO, Vector3(0, 0, 250)))
 		exact.append_array(g13.rest(200))   # 10 サンプル + 20 サンプル = 30 サンプル = ちょうど 300ms 周期
 	cases.append(_case("refractory_boundary", [ThresholdRule.new(GZ, 120.0, Dir.POSITIVE, 0.0, 300)], ANY, 1, exact))
+
+	# 14. 50Hz で測ったプロファイル（平滑化 5）。生成コードの update() は 20ms ごとにだけ読む
+	var g14 := SignalGen.new(114)
+	g14.interval_ms = 20
+	g14.gyro_noise = 30.0
+	var c14 := _case("rate_50hz_smooth5", [ThresholdRule.new(GZ, 110.0, Dir.POSITIVE, 25.0, 200)], ANY, 5,
+			_stream(g14, 12, func(g: SignalGen, i: int) -> Array[SensorReading]:
+				return g.gesture(200, Vector3.ZERO, Vector3(0, 0, 200.0 + 20.0 * (i % 3)))))
+	c14["profile"].sample_rate_hz = 50.0
+	cases.append(c14)
 	return cases
 
 
@@ -198,6 +208,7 @@ func _case(name: String, rules: Array, combine: int, smoothing: int, data: Array
 	p.created_at = "2026-01-01T00:00:00"
 	p.combine = combine
 	p.smoothing_window = smoothing
+	p.sample_rate_hz = 100.0   # 入力は 10ms 間隔（SignalGen の既定）。違うシナリオは呼び出し側で上書きする
 	for r in rules:
 		p.rules.append(r)
 	return {"name": name, "profile": p, "data": data}

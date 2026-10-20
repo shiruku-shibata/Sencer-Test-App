@@ -396,3 +396,61 @@ func test_gdscript_snippet_compiles_and_matches_detector() -> void:
 				fires += 1
 		assert_eq(mismatches, 0, "combine=%d" % combine)
 		assert_gt(fires, 0, "判定が起きている（比較が意味を持つ）")
+
+
+## 生成コードの update() は SAMPLE_INTERVAL_MS ごとにだけ判定するので、ゲームのループが速く回って
+## 同じ値を何度も渡しても、測定時（100Hz）と同じ判定になる（PR #11 レビュー 中-3）。
+## 以前は平滑化 5 で、1 サンプルだけの跳ね 6 回が 100Hz では 0 回、1000Hz で呼ぶと 6 回判定されていた。
+func test_gdscript_snippet_update_is_independent_of_call_rate() -> void:
+	var p := ThresholdProfile.new()
+	p.smoothing_window = 5
+	p.sample_rate_hz = 100.0
+	p.rules.append(ThresholdRule.new(GZ, 100.0, Dir.POSITIVE, 20.0, 200))
+	var script := GDScript.new()
+	script.source_code = p.to_code_snippet("gdscript")
+	assert_eq(script.reload(), OK, "生成コードがコンパイルできる")
+	if not script.can_instantiate():
+		return
+	assert_eq(script.get_script_constant_map().get("SAMPLE_INTERVAL_MS"), 10)
+
+	# 100Hz の元信号: 静止 0 に、1 サンプルだけの 300 deg/s の跳ね（ノイズ）と、200ms の本物の振り
+	var src: Array[float] = []
+	for i in 1200:
+		var v := 0.0
+		if i % 200 == 50:
+			v = 300.0
+		elif i % 200 >= 120 and i % 200 < 140:
+			v = 250.0
+		src.append(v)
+
+	var detector := p.make_detector()
+	var expected := 0
+	for i in src.size():
+		if detector.feed(SensorReading.new("x", i * 10, Vector3.ZERO, Vector3(0, 0, src[i]))):
+			expected += 1
+	assert_eq(expected, 6, "アプリの判定: 跳ねでは判定せず、振り 6 回だけ")
+
+	for loop_ms in [1, 3, 10]:
+		var game_side: RefCounted = script.new()
+		var fires := 0
+		var now := 0
+		while now < src.size() * 10:
+			var v := src[now / 10]   # IMU は 10ms ごとに更新（その間は同じ値を読む）
+			if game_side.call("update", Vector3.ZERO, Vector3(0, 0, v), now):
+				fires += 1
+			now += loop_ms
+		assert_eq(fires, expected, "ループ %d ms ごとに update() しても同じ回数" % loop_ms)
+
+
+func test_snippet_header_shows_sample_rate() -> void:
+	var p := _sample_profile()
+	p.sample_rate_hz = 50.0
+	for lang in ["cpp", "gdscript", "csharp"]:
+		var code := p.to_code_snippet(lang)
+		assert_contains(code, "測定時のサンプルレート: 50.0 Hz", lang)
+		assert_contains(code, "20", lang)
+	assert_contains(p.to_code_snippet("cpp"), "SAMPLE_INTERVAL_MS = 20;")
+	assert_contains(p.to_code_snippet("csharp"), "SampleIntervalMs = 20;")
+	p.sample_rate_hz = 0.0
+	assert_eq(p.sample_interval_ms(), 10, "不明なら 100Hz と仮定")
+	assert_contains(p.to_code_snippet("cpp"), "不明なため、100 Hz")

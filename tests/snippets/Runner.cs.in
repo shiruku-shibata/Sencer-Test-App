@@ -1,6 +1,7 @@
 // 生成した C# 判定コードに入力列を流し、1行ごとに 0/1 を出力する（run.sh がこのファイルから Runner.cs を作る）。
 //   使い方: Runner <シナリオ名> <input.txt>
 // 各シナリオのクラスは run.sh で MotionDetector_<シナリオ名> に名前を変えてある。
+// Update()（何度呼んでもよい版）も、サンプルの間に 1ms ごとに余分に呼んで Feed() と同じ判定になるかを確かめる。
 using System;
 using System.Globalization;
 using System.IO;
@@ -15,6 +16,8 @@ public static class SnippetRunner
             return 2;
         }
         Func<float, float, float, float, float, float, long, bool> feed;
+        Func<float, float, float, float, float, float, long, bool> update;
+        long interval;
         switch (args[0])
         {
 // @CASES@
@@ -22,6 +25,7 @@ public static class SnippetRunner
                 Console.Error.WriteLine("unknown case: " + args[0]);
                 return 2;
         }
+        int mismatch = 0;
         foreach (string line in File.ReadLines(args[1]))
         {
             string[] p = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
@@ -29,7 +33,18 @@ public static class SnippetRunner
             float[] v = new float[6];
             for (int i = 0; i < 6; i++) v[i] = float.Parse(p[i], CultureInfo.InvariantCulture);
             long t = long.Parse(p[6], CultureInfo.InvariantCulture);
-            Console.WriteLine(feed(v[0], v[1], v[2], v[3], v[4], v[5], t) ? "1" : "0");
+            bool fired = feed(v[0], v[1], v[2], v[3], v[4], v[5], t);
+            if (update(v[0], v[1], v[2], v[3], v[4], v[5], t) != fired) mismatch++;
+            for (long k = 1; k < interval; k++)
+            {
+                if (update(v[0], v[1], v[2], v[3], v[4], v[5], t + k)) mismatch++;
+            }
+            Console.WriteLine(fired ? "1" : "0");
+        }
+        if (mismatch > 0)
+        {
+            Console.Error.WriteLine("Feed() と Update() の結果が " + mismatch + " 回食い違いました");
+            return 3;
         }
         return 0;
     }
