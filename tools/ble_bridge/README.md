@@ -99,6 +99,36 @@ python3 tools/ble_bridge/ble_bridge.py --mock
 `--all` でスキャンすると、接続できない無関係な機器（`Other-Headphones`）も出ます。
 テスト用に `MOCK_DROP` を送ると「電波が途切れた」状態を再現します。
 
+### 有線（USB シリアル）をブリッジ経由で使う（主に Windows）
+
+アプリは有線を次の順で選びます（`SensorManager.choose_serial_mode()`）。使うのは常に1つだけです。
+
+| 順 | 方式 | Provider | 使える環境 |
+|---|---|---|---|
+| 1 | シリアル通信アドオン | `SerialSensorProvider` | アドオンを入れたとき |
+| 2 | OS 標準の `stty` / `cat` | `PipeSerialSensorProvider` | macOS / Linux |
+| 3 | **ブリッジ経由（pyserial）** | `BridgeSerialSensorProvider` | 上の2つが使えないとき（Windows で同梱アドオンが無い場合など） |
+
+- 3 はブリッジが pyserial（BSD-3-Clause）でポートを読み、BLE と同じ UDP・同じ行の形式で送ります（`"kind": "serial"`）。
+  画面では普通の「有線」デバイスとして見え、PAUSE / RESUME / RATE / INFO もそのまま送れます。
+- 必要なもの: Python と pyserial（`setup.sh` / `setup.bat` が bleak と一緒に入れます）。pyserial が無くても BLE は動きます。
+- macOS / Linux で試したいとき・強制したいとき: 環境変数 `SENSOR_SERIAL_MODE=bridge`（`auto` / `addon` / `pipe` / `bridge`）
+  または `godot --path . -- --serial-bridge`。使えない方式を指定した場合は自動選択に戻ります。
+- `--mock` では疑似シリアルポート `MOCK-COM1`（中身は実機ファームと同じ形式で送る M5 デバイス）が出ます。
+  `SENSOR_SERIAL_MODE=bridge SENSOR_BLE_MOCK=1 godot --path .` で、実機なしで画面から確認できます。
+- 既定では USB のシリアルポートだけを一覧に出します（内蔵の COM1 や Bluetooth の仮想ポートは除く）。
+  M5 製品でよく使う USB 変換（CH340/CH9102・FTDI・CP210x・ESP32 内蔵 USB）は先頭に並びます。
+- ポートを開く・閉じる操作は、他のアプリ（Arduino IDE のシリアルモニタなど）と同時にはできません。
+
+**この形にした理由**
+
+- ブリッジは Windows でも動く常駐プロセスで、行の組み立て・まとめ送り・孤児プロセス対策・自動起動・手動起動がすでにある。
+  有線のためだけに別の仕組み（GDExtension の同梱など）を増やすより、ここに相乗りするのがライセンス・配布ともに単純。
+- アプリとブリッジの UDP ポートとプロセスは1つにしたいので、`BridgeSerialSensorProvider` は自分では起動せず、
+  ブリッジを管理している `BleSensorProvider` に `attach_channel("serial", …)` で相乗りする（ブリッジの再起動・手動起動のボタンも共通）。
+- 方式を1つに決めるのは、同じポートを2つの方式で同時に開かないため（`SensorManager` は方式ごとに1つの Provider を前提にしている）。
+- macOS / Linux では追加の依存が要らない `stty` / `cat` を優先し、ブリッジ経由はフォールバックにした。
+
 ### コマンドライン引数
 
 | 引数 | 既定 | 内容 |
@@ -106,7 +136,9 @@ python3 tools/ble_bridge/ble_bridge.py --mock
 | `--port N` | 47811 | ブリッジが待ち受ける UDP ポート |
 | `--app-port N` | 47810 | アプリの UDP ポート（最初の hello の送り先。以後はコマンドの送り元へ返す） |
 | `--mock` | | bleak を使わず疑似デバイスで動かす |
-| `--all` | | スキャン結果を M5 センサーに絞らない |
+| `--all` | | スキャン結果を M5 センサーに絞らない（シリアルは USB 以外のポートも出す） |
+| `--no-serial` | | USB シリアル受信（`kind: "serial"`）を無効にする |
+| `--serial` | | `--scan-once` で BLE の代わりにシリアルポートを一覧する |
 | `--scan-timeout S` | 4 | スキャン時間の既定値（秒） |
 | `--idle-timeout S` | 10 | アプリから何も届かない時間がこれを超えたら、自動起動なら終了／手動起動ならデバイスを切断。0 で無効 |
 | `--parent-pid PID` | | 起動元アプリの pid。指定すると「自動起動」扱いになり、そのプロセスが終わると一緒に終了する |
@@ -120,6 +152,7 @@ python3 tools/ble_bridge/ble_bridge.py --mock
 | `SENSOR_BLE_PYTHON` | ブリッジを動かす Python の場所（指定するとそれだけを使う） |
 | `SENSOR_BLE_BRIDGE` | `ble_bridge.py` の場所（指定するとそれだけを使う） |
 | `SENSOR_BLE_MOCK=1` | ブリッジを `--mock` で起動する |
+| `SENSOR_SERIAL_MODE` | 有線の方式（`auto` / `addon` / `pipe` / `bridge`。既定 `auto`）。`-- --serial-bridge` でも `bridge` になる |
 
 アプリが Python を探す順番: `SENSOR_BLE_PYTHON` → `tools/ble_bridge/.venv`（Windows は `.venv\Scripts\python.exe`）→ PATH 上の `python3` / `python`
 （Windows は `py -3` → `python`。Finder から起動した macOS アプリは PATH が短いので `/opt/homebrew/bin` などもあわせて探す）。
@@ -135,13 +168,17 @@ python3 tools/ble_bridge/ble_bridge.py --mock
 - アプリは送り元が `127.0.0.1:<ブリッジのポート>` 以外のデータを無視する。
 - プロトコル版は `1`（`hello` の `protocol`）。互換性のない変更をしたら上げる。
 
+`kind`（`"ble"` / `"serial"`）で BLE と USB シリアルを区別する（v1.1.0 で追加）。コマンドで省略すると
+「接続中ならその種類、それ以外は BLE」とみなすので、`kind` を知らない古いアプリともそのまま動く。
+ブリッジからの `status` / `data` / `devices` / `scanning` には必ず `kind` が付く。
+
 ### アプリ → ブリッジ（コマンド）
 
 | cmd | 項目 | 内容 | 返事 |
 |---|---|---|---|
 | `hello` | `protocol`, `client` | 生存確認・初回のあいさつ | `hello` |
 | `ping` | | 生存確認（アプリは1秒ごとに送る） | `pong` |
-| `scan` | `timeout`（秒, 1〜30）, `all`（bool） | 数秒スキャンする。実行中に再度送っても1回分だけ返る | `scanning` → `devices` |
+| `scan` | `kind`, `timeout`（秒, 1〜30）, `all`（bool） | 数秒スキャンする。実行中に再度送っても1回分だけ返る | `scanning` → `devices` |
 | `connect` | `address` | 接続して TX の通知を購読 | `status`（connecting → connected / エラー） |
 | `disconnect` | `address` | 切断 | `status`（disconnected） |
 | `send` | `address`, `line` | デバイスの RX に `line + "\n"` を書く（`PAUSE` / `RESUME` / `RATE <Hz>` / `INFO`、64文字まで） | 失敗時のみ `log` |
@@ -152,8 +189,8 @@ python3 tools/ble_bridge/ble_bridge.py --mock
 
 | type | 項目 | 内容 |
 |---|---|---|
-| `hello` | `version`, `protocol`, `backend`（`bleak`/`mock`）, `pid`, `managed`（自動起動か）, `connected`（アドレス配列）, `ready`, `error`?, `message`? | 起動時と `hello` への返事。`ready=false` なら BLE が使えない（`error` に理由） |
-| `pong` | `connected`, `scanning` | `ping` への返事。アプリは `connected` で接続状態を突き合わせる |
+| `hello` | `version`, `protocol`, `backend`（`bleak`/`mock`）, `pid`, `managed`（自動起動か）, `connected`（BLE のアドレス配列）, `ready`, `error`?, `message`?, `serial`（`{ready, backend, connected, error?, message?}`。無効なら `null`） | 起動時と `hello` への返事。`ready=false` なら BLE が使えない（`error` に理由）。`serial.ready=false` なら有線のブリッジ経由が使えない |
+| `pong` | `connected`, `scanning`, `serial_connected`, `serial_scanning` | `ping` への返事。アプリは `connected`（BLE）/ `serial_connected` で接続状態を突き合わせる |
 | `scanning` | `active`, `timeout` | スキャンを始めた |
 | `devices` | `devices: [{address, name, rssi, nus}]`, `all`, `error`?, `message`? | スキャン結果（RSSI の強い順） |
 | `status` | `address`, `connected`, `state`（`connecting`/`connected`/`disconnected`）, `error`?, `message`? | 接続状態の変化。予期しない切断は `error: "link_lost"` |
@@ -171,7 +208,9 @@ python3 tools/ble_bridge/ble_bridge.py --mock
 | `no_adapter` | Bluetooth アダプタが無い | |
 | `scan_failed` / `connect_failed` / `send_failed` | 各操作の失敗（`message` に詳細） | |
 | `not_connected` | 未接続のデバイスへの操作 | |
-| `link_lost` | 接続中に切れた（電源・距離） | |
+| `link_lost` | 接続中に切れた（BLE: 電源・距離、シリアル: ケーブルが抜けた） | |
+| `pyserial_missing` | pyserial が import できない（`hello.serial.error`） | pyserial 未インストール: setup.sh を実行 |
+| `unsupported` | ブリッジがその `kind` に対応していない（`--no-serial` など） | |
 
 ### 例
 
@@ -231,7 +270,9 @@ python3 -m unittest discover -s tools/ble_bridge/tests
 godot --headless --path . -s res://tools/ble_bridge/tests/godot_ble_smoke.gd
 ```
 
-Godot 側のテストはポート 47830〜47867 を使います。
+Godot 側のテストはポート 47830〜47883 を使います。
+Godot は `-s` のスクリプトが読み込めない（構文エラー）ときも終了コード 0 で終わるので、
+最後に `[smoke] すべて成功` が出ていることも確認してください。
 
 ## トラブルシュート
 
