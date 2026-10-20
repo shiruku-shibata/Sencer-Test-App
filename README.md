@@ -112,14 +112,31 @@ cd firmware/m5stick_sender && pio test -e native                               #
 
 ## ビルド（配布用）
 
+### macOS（共有用 zip）
+
 ```bash
-# エクスポートテンプレート（エンジンと同じバージョン）を入れたうえで
-godot --headless --export-release "macOS" build/SensorTestApp.zip
+sh tools/package_macos.sh            # → build/SensorTestApp-macOS-<バージョン>.zip
 ```
 
-Windows / Linux のプリセットもあります。BLE を使う場合は、配布物の実行ファイルと同じ場所に
-`tools/ble_bridge/` の中身を `ble_bridge/` として添えてください（`.venv` は含めない。手順は tools/ble_bridge/README.md）。
-macOS では未署名配布のため、初回は右クリック →「開く」、または `xattr -dr com.apple.quarantine "Sensor Test App.app"`。
+エクスポートテンプレート（エンジンと同じバージョン）が必要です（エディタの「エクスポートテンプレートの管理」で導入）。
+スクリプトが 書き出し → BLE ブリッジの同梱 → 説明書の同梱 → アドホック署名と検証 → zip 化 までを行います。
+
+```
+SensorTestApp-macOS/
+├── Sensor Test App.app        アプリ本体（Apple シリコン / Intel 両対応。デモ・有線はこれだけで動く）
+├── ble_bridge/                BLE を使う人だけ、最初に一度 setup.sh を実行
+├── はじめにお読みください.txt  受け取った人向けの説明（初回の開き方・使い方・BLE の準備）
+└── THIRD_PARTY_LICENSES.md
+```
+
+Apple の公証を受けていないため、受け取った人は初回だけ右クリック →「開く」が必要です
+（開けない場合は `xattr -dr com.apple.quarantine "Sensor Test App.app"`）。
+
+### Windows / Linux
+
+`export_presets.cfg` にプリセットがあります（`godot --headless --export-release "Windows Desktop" …`）。
+BLE を使う場合は、実行ファイルと同じ場所に `tools/ble_bridge/` の中身を `ble_bridge/` として添えてください
+（`.venv` は含めない。手順は tools/ble_bridge/README.md）。
 
 ## 既知の制限
 

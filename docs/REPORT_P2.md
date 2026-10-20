@@ -21,7 +21,7 @@
 | 接続は有線 or BLE | 有線：macOS/Linux は OS 標準コマンド、Windows はブリッジ経由（pyserial）。BLE：Python(bleak) のブリッジ経由 | `src/core/*_provider.gd`, `tools/ble_bridge/` |
 | IMU は指定した軸だけで計測 | 8軸（加速度 XYZ・ジャイロ XYZ・合成加速度・合成角速度）から選択。表示・測定・判定・CSV記録すべてが選択軸だけで動く | `src/core/sensor_axis.gd`, `src/ui/widgets/axis_selector.gd` |
 | 4人くらいのチーム | 担当 A〜D の4人で開始し、後半に E（UI追加）と F（外部レビュー）を追加 | 本書 3 章 |
-| 共有可能な形式 | GitHub に PR として公開。しきい値は JSON プロファイルで保存・コピーでき、ゲーム側に貼れる C++ / GDScript / C# の判定コードも出力。Windows / Linux の書き出し設定を追加 | `docs/`, `ThresholdProfile` |
+| 共有可能な形式 | **共有用 macOS アプリ（zip）**を作成（4.4節）。GitHub に PR として公開。しきい値は JSON プロファイルで保存・コピーでき、ゲーム側に貼れる C++ / GDScript / C# の判定コードも出力。Windows / Linux の書き出し設定を追加 | `docs/`, `ThresholdProfile` |
 | テスト・レビューの繰り返し | 3回のレビュー（相互レビュー×2、外部レビュー×1）と修正を実施（本書 5 章） | 各PRのコメント |
 | 後から参加した人向けの説明 | 全PRに「後から参加した人へ」の節。README・設計書・各フォルダの README・アプリ内マニュアル | README.md ほか |
 
@@ -83,7 +83,18 @@
 - アプリが自動起動。macOS の権限で失敗する場合は手動起動にも対応
 - 実機なしで動く `--mock`（疑似 BLE 2台＋疑似シリアル1台）
 
-### 4.4 ドキュメント
+### 4.4 共有用 macOS アプリ
+
+`sh tools/package_macos.sh` で `build/SensorTestApp-macOS-0.2.0.zip`（約57MB）を作成しました。
+
+- 中身: `Sensor Test App.app`（Apple シリコン / Intel 両対応、アドホック署名）、`ble_bridge/`、`はじめにお読みください.txt`、ライセンス一覧
+- 確認したこと:
+  - 署名の検証（zip 展開後も有効）、Bluetooth 使用目的の文言が Info.plist に入っていること
+  - 書き出したアプリの起動で、隣の `ble_bridge/` を見つけてブリッジを自動起動し、終了時にブリッジも終了すること（`open` で Finder と同じ起動方法も確認）
+  - 書き出した .pck での画面フロー確認（失敗 0）
+- 受け取った人は初回だけ右クリック →「開く」（Apple の公証なしのため）。BLE を使う場合のみ `sh ble_bridge/setup.sh` を一度実行。
+
+### 4.5 ドキュメント
 
 | 文書 | 対象読者 |
 |---|---|
