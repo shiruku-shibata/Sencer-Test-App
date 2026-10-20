@@ -65,6 +65,68 @@ const DEV_COPIED := "コピーしました"
 const DEV_BLE_NOT_READY := "BLE ブリッジの準備ができていません"
 const DEV_LABEL_DEVICE_NAME := "機器名"
 const DEV_LABEL_RSSI := "電波"
+const DEV_LABEL_COMMANDS := "デバイス操作"
+const DEV_RATE_WITH_SETTING := "%.0f Hz（設定 %d）"
+const DEV_PAUSED_SUFFIX := "（一時停止中）"
+
+# ---------------------------------------------------------------- デバイス操作（デバイス管理の「操作…」）
+
+const CMD_OPEN := "操作…"
+const CMD_OPEN_TIP := "一時停止・再開、送信レートの変更、情報の取得をデバイスへ送ります"
+const CMD_OPEN_DISABLED_TIP := "接続中のデバイスだけ操作できます"
+const CMD_TITLE := "デバイス操作: %s"
+const CMD_CLOSE := "閉じる"
+const CMD_DEVICE := "%s（%s ・ %s）"
+const CMD_NOT_CONNECTED := "未接続です。接続すると操作できます。"
+const CMD_SENDING := "送信"
+const CMD_PAUSE := "一時停止（PAUSE）"
+const CMD_RESUME := "再開（RESUME）"
+const CMD_RATE := "送信レート"
+const CMD_RATE_APPLY := "適用（RATE）"
+const CMD_RATE_HINT := "%d〜%d Hz（BLE は 100 Hz 以下を推奨）。本体を再起動すると 100 Hz に戻ります。"
+const CMD_INFO := "情報を取得（INFO）"
+const CMD_STATE_SENDING := "送信中"
+const CMD_STATE_PAUSED := "一時停止中"
+const CMD_STATE_UNKNOWN := "不明"
+const CMD_STATE_LINE := "送信状態: %s　／　送信レート 設定: %s　実際の受信: %.0f Hz"
+const CMD_RATE_UNKNOWN := "不明（INFO で取得）"
+const CMD_RATE_HZ := "%d Hz"
+const CMD_RATE_MISMATCH := "実際の受信が設定より少なめです（BLE の帯域不足・デモの上限 100 Hz・受信の詰まりなど）。"
+const CMD_RESULT_TITLE := "応答"
+const CMD_RESULT_NONE := "まだコマンドを送っていません。"
+const CMD_WAITING := "→ %s を送信しました。応答待ち…"
+const CMD_REPLY := "→ %s の応答: %s"
+const CMD_REPLY_ERROR := "→ %s はエラーになりました: %s"
+const CMD_NO_REPLY := "→ %s を送信しましたが、%d 秒以内に応答がありませんでした（ファームウェアが古い・ケーブルやポートの不調など）。"
+const CMD_SEND_FAILED := "→ %s を送信できませんでした（このデバイス・接続方式はコマンドに対応していないか、接続が切れています）。"
+const CMD_DISCONNECTED := "→ 切断されたため、%s の応答待ちをやめました。"
+const CMD_HISTORY_TITLE := "デバイスから届いた '#' 行（新しいものが下）"
+const CMD_HISTORY_EMPTY := "（まだ届いていません）"
+const CMD_INFO_TITLE := "デバイス情報"
+const CMD_INFO_EMPTY := "（「情報を取得」を押すと表示されます）"
+## 情報行の項目名（firmware/m5stick_sender/README.md「情報行の項目」）。ここに無い項目は key=value のまま出す。
+const CMD_INFO_KEYS := {
+	"model": "機種",
+	"name": "名前",
+	"fw": "ファームウェア",
+	"imu": "IMU",
+	"rate": "送信レート [Hz]",
+	"sending": "送信中（1=はい）",
+	"ble": "BLE 使用可（1=はい）",
+	"connected": "BLE 接続中（1=はい）",
+	"drop_usb": "捨てた行（USB）",
+	"drop_ble": "捨てた行（BLE）",
+}
+const CMD_ERROR_HINTS := {
+	"rate_out_of_range": "レートが範囲外です。",
+	"rate_missing": "レートの数値がありません。",
+	"rate_not_number": "レートは整数で指定してください。",
+	"unknown_command": "デバイスが知らないコマンドです（ファームウェアが古い可能性）。",
+	"unexpected_argument": "余計な引数があります。",
+	"line_too_long": "コマンドが長すぎます。",
+	"imu_not_found": "IMU が見つかりません（IMU の無い機種か、書き込む env の選び間違い）。",
+	"ble_init_failed": "デバイスの BLE の初期化に失敗しました（USB シリアルは使えます）。",
+}
 
 # ---------------------------------------------------------------- ログ管理（S3）
 
@@ -240,6 +302,16 @@ const MANUAL_PAGES := {
 4. 複数台使うときは、ニックネーム欄に名前を入力してEnterを押すと見分けやすくなります。
 
 ケーブルを使わずに接続したいときは「BLEで接続する」ページを見てください。
+
+[b]デバイスを操作する（一時停止・送信レート・情報）[/b]
+接続中のデバイスの行にある [b]操作…[/b] を押すと、デバイスへコマンドを送る画面が開きます（有線・BLE・デモ共通）。
+・[b]一時停止 / 再開[/b]: デバイスの送信を止める／再開します（本体のボタンと同じ）。
+・[b]送信レート[/b]: 10〜200 Hz を選んで [b]適用[/b]。BLE は 100 Hz 以下がおすすめです。本体を再起動すると 100 Hz に戻ります。
+・[b]情報を取得[/b]: 機種・ファームウェア・現在のレート・捨てた行数などを表示します。
+送るとデバイスの応答（例: # ok=RATE rate=50）が「応答」欄に出ます。[color=#ffb85a]# error=…[/color] はエラーで、理由も表示します。
+応答を待つ間（最大3秒）は次のコマンドを送れません。「送信できませんでした」と出たら、接続が切れていないか確認してください。
+一覧の「受信」欄には、実際に受信しているレートとデバイスの設定値が「98 Hz（設定 100）」のように並びます。
+デモデバイスも同じように反応します（ただし実際に出せるのは最大 100 Hz）。
 
 実機やシリアル通信アドオンが無い場合は、[b]デモ[/b]と表示されるデバイス（demo-01 など）に接続すると、
 ダミーデータで一通りの操作を試せます。""",
