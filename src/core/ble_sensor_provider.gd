@@ -149,7 +149,7 @@ var _scan_error := ""
 var _known: Dictionary = {}                   ## address -> {name, rssi}
 var _connected: Dictionary = {}               ## address -> true
 var _connecting: Dictionary = {}              ## address -> 経過秒
-var _cancelled: Dictionary = {}               ## 接続中に切断を押された address -> true
+var _cancelled: Dictionary = {}               ## 切断を押し、ブリッジの切断完了（status disconnected）を待っている address -> true
 var _device_errors: Dictionary = {}           ## address -> 直近のエラー文
 var _device_info: Dictionary = {}             ## address -> 直近の情報行（# model=... を含む行だけ）
 var _device_replies: Dictionary = {}          ## address -> 直近のその他の '#' 行（# ok= / # error= / # event=）
@@ -197,9 +197,11 @@ func open_device(device_id: String) -> bool:
 
 
 func close_device(device_id: String) -> void:
-	if _connecting.has(device_id):
-		_connecting.erase(device_id)
-		_cancelled[device_id] = true
+	_connecting.erase(device_id)
+	# ブリッジが切断を終えた（status disconnected が届く）までは「切断待ち」として覚えておく。
+	# 切断を送る前にブリッジが出した pong / hello の connected にはまだこの機器が入っているので、
+	# それで接続済みに戻さないようにする（戻すと一瞬「接続 → 切断」と見えてしまう）。
+	_cancelled[device_id] = true
 	if _state == State.READY:
 		_send({"cmd": "disconnect", "address": device_id})
 	# 画面がすぐ反応するよう、ブリッジの返事を待たずに切断扱いにする
@@ -1025,9 +1027,21 @@ static func _explicit_note(setting: String, env_name: String) -> String:
 	return ""
 
 
-static func _shell_quote(text: String) -> String:
-	if OS.get_name() == "Windows":
+## 画面に出す手動起動コマンド用に、パスをシェルの1語にする。
+## macOS / Linux: 英数字と / . _ - + = : , @ % だけなら引用しない（読みやすさのため）。
+## それ以外（空白・& $ ( ) ; ` * ~ ! など）を1文字でも含めば '...' で囲む（中の ' は '\'' にする）。
+static func _shell_quote(text: String, windows: bool = OS.get_name() == "Windows") -> String:
+	if windows:
 		return "\"%s\"" % text
-	if text.is_empty() or text.contains(" ") or text.contains("'") or text.contains("\""):
+	if text.is_empty() or not _is_shell_safe(text):
 		return "'%s'" % text.replace("'", "'\\''")
 	return text
+
+
+static func _is_shell_safe(text: String) -> bool:
+	for i in text.length():
+		var c := text.unicode_at(i)
+		var alnum := (c >= 0x30 and c <= 0x39) or (c >= 0x41 and c <= 0x5a) or (c >= 0x61 and c <= 0x7a)
+		if not alnum and not char(c) in "/._-+=:,@%":
+			return false
+	return true
