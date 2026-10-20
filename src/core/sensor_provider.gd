@@ -39,6 +39,31 @@ func send_command(_device_id: String, _line: String) -> bool:
 	return false
 
 
+## デバイスから届いた '#' 行（情報行・コマンド応答）の記録。
+## 派生クラスは受信した '#' 行を _record_device_line() に渡すだけでよい（下の device_info などが使えるようになる）。
+var _device_lines := DeviceLineLog.new()
+
+
+## デバイスが送ってきた直近の情報行（例 "# model=M5StickCPlus2 rate=100 ..."）。無ければ空。
+func device_info(device_id: String) -> String:
+	return _device_lines.info(device_id)
+
+
+## デバイスが送ってきた直近の応答・イベント・エラー行（例 "# ok=RATE rate=50"）。無ければ空。
+func device_reply(device_id: String) -> String:
+	return _device_lines.reply(device_id)
+
+
+## 受信した '#' 行の記録（情報行・応答の履歴と、分かっている設定）。
+func device_line_log() -> DeviceLineLog:
+	return _device_lines
+
+
+## 受信した '#' 行を記録する（派生クラスの受信処理から呼ぶ）。
+func _record_device_line(device_id: String, line: String) -> void:
+	_device_lines.record(device_id, line)
+
+
 ## 毎フレーム呼ばれる。受信バッファの読み出しはここで行う。
 func poll(_delta: float) -> void:
 	pass

@@ -954,6 +954,7 @@ func _on_data(message: Dictionary) -> void:
 
 ## デバイスからの '#' 行（情報行・コマンド応答・イベント・エラー）を振り分ける。
 func _on_info_line(address: String, text: String) -> void:
+	_record_device_line(address, text)   # 基底の記録（デバイス操作画面の応答表示に使う）
 	var fields := parse_info_fields(text)
 	if fields.has("model"):
 		_device_info[address] = text          # 機種などの情報行だけを覚える

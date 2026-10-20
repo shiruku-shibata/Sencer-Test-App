@@ -152,6 +152,12 @@ func send_command(device_id: String, line: String) -> bool:
 	return provider.send_command(device_id, line)
 
 
+## デバイスから届いた '#' 行（情報行・コマンド応答）の記録。デバイスが不明なら null。
+func device_line_log(device_id: String) -> DeviceLineLog:
+	var provider := _provider_for(device_id)
+	return provider.device_line_log() if provider != null else null
+
+
 ## 指定した通信方式の Provider（無ければ null）。方式固有の操作（BLEブリッジの再起動など）に使う。
 func get_provider(mode: SensorDevice.Mode) -> SensorProvider:
 	for provider in providers:
@@ -201,6 +207,12 @@ func _on_reading_received(reading: SensorReading) -> void:
 
 func _on_connection_changed(device_id: String, connected: bool) -> void:
 	var device := registry.get_device(device_id)
+	if connected:
+		# 前回の接続で覚えた設定（一時停止中など）は、本体の再起動で変わっているかもしれないので忘れる
+		# （接続後に届く情報行・応答で改めて分かる）
+		var line_log := device_line_log(device_id)
+		if line_log != null:
+			line_log.clear(device_id)
 	if device != null:
 		device.connected = connected
 		if not connected:
