@@ -10,6 +10,12 @@ extends SensorProvider
 ##   ・実時間（time_source）に追従する。初回や、長く止まっていて RESYNC_MS 以上遅れたときは、
 ##     その回に出すサンプルの最後が実時間になるよう前へ合わせ直す（その間は「受信が途切れた」扱い）
 ##   ・停止明けに大量のサンプルをまとめて出さないよう、1回の poll() で出すのは MAX_SAMPLES_PER_POLL まで
+##
+## コマンド（send_command）は実機ファームと同じ規則で解釈し、同じ書式の '#' 行で答える（DeviceCommand.emulate）。
+##   ・PAUSE / RESUME でそのデバイスの送信を止める／再開する
+##   ・RATE <Hz> で送信レートを変える。ただしデモの時刻は 10ms 刻みなので、出せるのは最大 100Hz
+##     （101〜200 を設定しても実際は 100Hz。応答は設定した値で返す＝設定と実受信の差を確かめられる）
+##   ・設定は実機と同じく、接続し直しても保たれる（アプリを再起動すると既定に戻る）
 
 const SAMPLE_INTERVAL_SEC := 0.01   ## 100Hz 相当
 const SAMPLE_INTERVAL_MS := 10
@@ -24,6 +30,8 @@ var _open_ids: Array[String] = []
 var _elapsed := 0.0
 var _phase := 0.0
 var _clock_ms := -1                 ## 直前に出したサンプルの時刻（-1 = まだ1つも出していない）
+var _states: Dictionary = {}        ## device_id -> {"rate": int, "sending": bool}（コマンドで変わる設定）
+var _credits: Dictionary = {}       ## device_id -> 送信レートの間引き用の持ち越し
 
 
 func get_mode() -> SensorDevice.Mode:
@@ -43,9 +51,12 @@ func scan() -> Array:
 func open_device(device_id: String) -> bool:
 	if not DEVICE_IDS.has(device_id):
 		return false
-	if not _open_ids.has(device_id):
+	var newly_opened := not _open_ids.has(device_id)
+	if newly_opened:
 		_open_ids.append(device_id)
 	connection_changed.emit(device_id, true)
+	if newly_opened:
+		_record_device_line(device_id, _info_line(device_id))   # 実機の BLE 購読時と同じく、接続後に情報行を出す
 	return true
 
 
@@ -76,12 +87,55 @@ func poll(delta: float) -> void:
 		_clock_ms += SAMPLE_INTERVAL_MS
 		_phase += 0.06
 		for id in _open_ids:
-			reading_received.emit(_make_reading(id, _clock_ms))
+			if _should_send(id):
+				reading_received.emit(_make_reading(id, _clock_ms))
 
 
 ## 直前に出したサンプルの時刻（まだ出していなければ -1）。
 func clock_ms() -> int:
 	return _clock_ms
+
+
+## コマンドを実機ファームと同じ規則で処理し、応答を '#' 行として記録する（device_reply などで読める）。
+func send_command(device_id: String, line: String) -> bool:
+	if not _open_ids.has(device_id) or line.contains("\n"):
+		return false
+	var reply := DeviceCommand.emulate(line, _state(device_id), func() -> String: return _info_line(device_id))
+	if not reply.is_empty():
+		_record_device_line(device_id, reply)
+	return true
+
+
+## そのデバイスの現在の設定 {"rate": int, "sending": bool}（テスト・確認用の複製）。
+func device_state(device_id: String) -> Dictionary:
+	return _state(device_id).duplicate()
+
+
+func _state(device_id: String) -> Dictionary:
+	if not _states.has(device_id):
+		_states[device_id] = {"rate": DeviceCommand.RATE_DEFAULT, "sending": true}
+	return _states[device_id]
+
+
+## 100Hz の刻みごとに、このデバイスのサンプルを出すか（一時停止・送信レートの間引き）。
+func _should_send(device_id: String) -> bool:
+	var state := _state(device_id)
+	if not bool(state["sending"]):
+		return false
+	var credit: float = float(_credits.get(device_id, 0.0)) + float(state["rate"]) / 100.0
+	var send := credit + 1e-9 >= 1.0
+	if send:
+		credit -= 1.0
+	_credits[device_id] = minf(credit, 1.0)   # 100Hz を超える設定は 100Hz で頭打ち（ため込まない）
+	return send
+
+
+## 実機ファーム（firmware/m5stick_sender の情報行）と同じ項目の情報行。
+func _info_line(device_id: String) -> String:
+	var state := _state(device_id)
+	return "# model=DEMO name=%s rate=%d ble=0 fw=demo imu=DEMO sending=%d connected=0 drop_usb=0 drop_ble=0" % [
+		device_id, int(state["rate"]), 1 if bool(state["sending"]) else 0
+	]
 
 
 func _make_reading(device_id: String, timestamp_ms: int) -> SensorReading:

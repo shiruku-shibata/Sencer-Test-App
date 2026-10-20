@@ -176,6 +176,9 @@ func poll(_delta: float) -> void:
 			continue
 
 		for line in _read_new_lines(stream):
+			if SensorDataParser.is_info_line(line):
+				_record_device_line(device_id, line)   # コマンド応答・情報行を覚える
+				continue
 			var reading := SensorDataParser.parse_line(line, device_id)
 			if reading != null:
 				reading_received.emit(reading)

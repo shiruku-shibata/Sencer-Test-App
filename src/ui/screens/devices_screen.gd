@@ -1,11 +1,12 @@
 class_name DevicesScreen
 extends VBoxContainer
 ## S1 デバイス管理画面。デバイスの探索・接続・切断・ニックネーム設定と、BLE ブリッジの状態表示を行う。
+## 接続中のデバイスは「操作…」から一時停止・送信レート変更・情報取得ができる（DeviceCommandDialog）。
 ##
 ## 一覧は1秒ごとに更新されるが、行は作り直さずに中身だけ書き換える
 ## （作り直すとニックネーム入力中にフォーカスが外れてしまうため）。
 
-const COLUMN_COUNT := 8
+const COLUMN_COUNT := 9
 const MODE_COLORS := {
 	SensorDevice.Mode.SERIAL: Color(0.55, 0.8, 1.0),
 	SensorDevice.Mode.BLE: Color(0.78, 0.62, 1.0),
@@ -27,9 +28,10 @@ class Row:
 	var rssi: Label
 	var rate: Label
 	var action: Button
+	var commands: Button
 
 	func controls() -> Array[Control]:
-		return [name_edit, mode, device_name, id, state, rssi, rate, action]
+		return [name_edit, mode, device_name, id, state, rssi, rate, action, commands]
 
 
 var _manager: SensorManager
@@ -47,6 +49,7 @@ var _copy_button: Button
 var _header_count := 0
 var _rows: Dictionary = {}           ## device_id -> Row
 var _row_order: PackedStringArray = []
+var _command_dialog: DeviceCommandDialog
 
 
 func setup(manager: SensorManager) -> void:
@@ -90,12 +93,16 @@ func _build() -> void:
 	_grid.add_theme_constant_override("v_separation", 6)
 	for header in [UIStrings.LABEL_NICKNAME, UIStrings.LABEL_MODE, UIStrings.DEV_LABEL_DEVICE_NAME,
 			UIStrings.LABEL_ID, UIStrings.LABEL_STATE, UIStrings.DEV_LABEL_RSSI, UIStrings.LABEL_RATE,
-			UIStrings.LABEL_ACTION]:
+			UIStrings.LABEL_ACTION, UIStrings.DEV_LABEL_COMMANDS]:
 		var label := _make_label(header)
 		label.modulate = COLOR_MUTED
 		_grid.add_child(label)
 	_header_count = _grid.get_child_count()
 	add_child(_grid)
+
+	_command_dialog = DeviceCommandDialog.new()
+	add_child(_command_dialog)
+	_command_dialog.setup(_manager)
 
 
 ## BLE ブリッジの状態・対処・操作ボタンをまとめた枠。
@@ -253,6 +260,9 @@ func _create_row(device_id: String) -> Row:
 	row.rate = Label.new()
 	row.action = Button.new()
 	row.action.pressed.connect(func() -> void: _on_action(device_id))
+	row.commands = Button.new()
+	row.commands.text = UIStrings.CMD_OPEN
+	row.commands.pressed.connect(func() -> void: _command_dialog.open_for(device_id))
 
 	# 初回はニックネームを入れておく（以後は入力中でないときだけ同期する）
 	var device := _manager.registry.get_device(device_id)
@@ -274,9 +284,11 @@ func _update_row(row: Row, device: SensorDevice) -> void:
 	row.id.text = device.id
 
 	var ble: BleSensorProvider = _ble() if device.mode == SensorDevice.Mode.BLE else null
+	var line_log := _manager.device_line_log(device.id)
+	var settings := line_log.settings(device.id) if line_log != null else {}
 	var tips := PackedStringArray()
-	if ble != null:
-		for text in [ble.device_info(device.id), ble.device_reply(device.id)]:
+	if line_log != null:
+		for text in [line_log.info(device.id), line_log.reply(device.id)]:
 			if not text.is_empty():
 				tips.append(text)
 	row.device_name.tooltip_text = "\n".join(tips)
@@ -284,6 +296,8 @@ func _update_row(row: Row, device: SensorDevice) -> void:
 	var error := ble.device_error(device.id) if ble != null else ""
 	if device.connected:
 		row.state.text = UIStrings.LABEL_CONNECTED
+		if not bool(settings.get("sending", true)):
+			row.state.text += UIStrings.DEV_PAUSED_SUFFIX
 		row.state.modulate = COLOR_OK
 	elif connecting:
 		row.state.text = UIStrings.DEV_CONNECTING
@@ -297,7 +311,12 @@ func _update_row(row: Row, device: SensorDevice) -> void:
 	row.state.tooltip_text = error
 
 	row.rssi.text = "%d dBm" % device.rssi if device.rssi != 0 else "-"
-	row.rate.text = "%.0f Hz" % device.rate_hz if device.connected else "-"
+	if not device.connected:
+		row.rate.text = "-"
+	elif settings.has("rate"):
+		row.rate.text = UIStrings.DEV_RATE_WITH_SETTING % [device.rate_hz, int(settings["rate"])]
+	else:
+		row.rate.text = "%.0f Hz" % device.rate_hz
 
 	if device.connected:
 		row.action.text = UIStrings.BTN_DISCONNECT
@@ -309,6 +328,8 @@ func _update_row(row: Row, device: SensorDevice) -> void:
 			and (not ble.is_ready() or not ble.is_available())
 	row.action.disabled = ble_not_ready
 	row.action.tooltip_text = UIStrings.DEV_BLE_NOT_READY if ble_not_ready else ""
+	row.commands.disabled = not device.connected
+	row.commands.tooltip_text = UIStrings.CMD_OPEN_TIP if device.connected else UIStrings.CMD_OPEN_DISABLED_TIP
 
 
 func _on_action(device_id: String) -> void:

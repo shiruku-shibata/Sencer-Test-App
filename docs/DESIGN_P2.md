@@ -225,6 +225,15 @@ LogReplay.axes_in(path: String) -> Array      # そのCSVに含まれる軸
 ローカル UDP、1データグラム = 1 JSON。アプリ側 `127.0.0.1:47810`、ブリッジ側 `127.0.0.1:47811`。
 詳細は `tools/ble_bridge/README.md`（B が作成）。ブリッジには実機なしで動く `--mock` モードを用意する。
 
+### 5.8 デバイス操作（E、後から追加）
+
+- デバイス管理画面の各行の「操作…」→ `DeviceCommandDialog`（`src/ui/widgets/device_command_dialog.gd`）から
+  `SensorManager.send_command()` で PAUSE / RESUME / RATE <Hz> / INFO を送り、応答を表示する。
+- デバイスからの `#` 行（情報行・`# ok=` / `# error=` / `# event=`）は、方式によらず `SensorProvider` の
+  `_record_device_line(id, line)` に渡す（基底が `DeviceLineLog` に記録）。読む側は `device_info(id)` / `device_reply(id)` /
+  `device_line_log()`（`SensorManager.device_line_log(id)`）。**新しい Provider も `#` 行をここへ渡すこと**（応答が画面に出なくなるため）。
+- コマンド・`#` 行の書式と、ファーム互換の応答（デモデバイスが使う）は `DeviceCommand`（`src/core/device_command.gd`）。
+
 ## 6. 受け入れ条件
 
 1. 実機なし（デモデバイス）で、しきい値測定の一連の流れ（静止測定 → 試行×数回 → 推奨値 → 判定テスト → 保存）ができる。
