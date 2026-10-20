@@ -11,8 +11,12 @@ M5 デバイス（Nordic UART Service で CSV 行を送るファームウェア�
 - ブリッジ → アプリ: 直近にコマンドを送ってきたアドレス（既定 127.0.0.1:47810, --app-port）
 - プロトコルの詳細は README.md を参照。
 
-依存は bleak（MIT）だけで、使うときに遅延 import する。
---mock を付けると bleak も実機も無しで、疑似デバイス2台が動く。
+依存は bleak（MIT）と、任意機能の USB シリアル受信に使う pyserial（BSD-3-Clause）。
+どちらも使うときに遅延 import し、無ければその機能だけが使えない（もう片方は動く）。
+--mock を付けると bleak / pyserial も実機も無しで、疑似 BLE デバイス2台と疑似シリアルポート1つが動く。
+
+USB シリアル受信は、アプリが OS 標準コマンド（stty/cat）もシリアルアドオンも使えない環境
+（主に Windows）で有線接続を使うためのもの。プロトコルの "kind": "serial" で指定する。
 
 Python 3.9 以上で動くように書いている（macOS 標準の /usr/bin/python3 が 3.9 のため）。
 """
@@ -31,7 +35,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 PROTOCOL_VERSION = 1
 
 HOST = "127.0.0.1"
@@ -55,6 +59,20 @@ MOCK_RATE_MIN = 10
 MOCK_RATE_MAX = 200
 MOCK_COMMANDS = "PAUSE,RESUME,RATE,INFO"
 
+PYSERIAL_INSTALL_HINT = (
+    "pyserial がインストールされていません（有線をブリッジ経由で使うときに必要）。"
+    "macOS / Linux は tools/ble_bridge/setup.sh、Windows は tools/ble_bridge/setup.bat を実行してください"
+    "（手動なら: python -m pip install -r tools/ble_bridge/requirements.txt）。"
+)
+SERIAL_BAUDRATE = 115200
+# M5 製品などでよく使われる USB シリアル変換の VID（一覧で上に並べるだけ。絞り込みには使わない）
+KNOWN_SERIAL_VIDS = {
+    0x1A86: "WCH (CH340/CH9102)",
+    0x0403: "FTDI",
+    0x10C4: "Silicon Labs (CP210x)",
+    0x303A: "Espressif (USB)",
+}
+
 BLEAK_INSTALL_HINT = (
     "bleak がインストールされていません。"
     "macOS / Linux は tools/ble_bridge/setup.sh、Windows は tools/ble_bridge/setup.bat を実行してください"
@@ -72,6 +90,12 @@ ERR_NOT_CONNECTED = "not_connected"
 ERR_SEND_FAILED = "send_failed"
 ERR_LINK_LOST = "link_lost"
 ERR_BAD_REQUEST = "bad_request"
+ERR_PYSERIAL_MISSING = "pyserial_missing"
+ERR_UNSUPPORTED = "unsupported"
+
+# 接続の種類（プロトコルの "kind"）
+KIND_BLE = "ble"
+KIND_SERIAL = "serial"
 
 
 class BridgeError(Exception):
@@ -347,12 +371,174 @@ class BleakBackend(Backend):
         return [a for a, c in self._clients.items() if getattr(c, "is_connected", False)]
 
 
+class _SerialLink:
+    """開いた1ポート分。専用スレッドで読み続け、届いたバイト列をイベントループへ渡す。"""
+
+    def __init__(self, address: str, port: Any, loop: asyncio.AbstractEventLoop,
+                 on_data: Callable[[str, bytes], None], on_lost: Callable[[str, str], None]) -> None:
+        self.address = address
+        self.port = port
+        self.loop = loop
+        self.on_data = on_data
+        self.on_lost = on_lost
+        self.closing = False
+        self._thread = threading.Thread(target=self._run, name="serial-" + address, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self.closing:
+            try:
+                waiting = self.port.in_waiting
+                data = self.port.read(waiting if waiting > 0 else 1)   # timeout 付きで待つ
+            except Exception as exc:   # ケーブルが抜かれた等
+                if not self.closing:
+                    self._post(self.on_lost, self.address,
+                               "シリアルポートが切断されました（ケーブル・電源を確認してください）: %s" % exc)
+                return
+            if data:
+                self._post(self.on_data, self.address, bytes(data))
+
+    def _post(self, func: Callable[..., None], *args: Any) -> None:
+        try:
+            self.loop.call_soon_threadsafe(func, *args)
+        except RuntimeError:
+            pass   # ループが閉じた（終了中）
+
+    def write(self, payload: bytes) -> None:
+        self.port.write(payload)
+        self.port.flush()
+
+    def close(self) -> None:
+        self.closing = True
+        try:
+            self.port.close()
+        except Exception:
+            pass
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+
+
+class SerialBackend(Backend):
+    """pyserial を使う USB シリアル受信（任意機能）。pyserial は初めて必要になったときに import する。
+
+    アプリが stty/cat もシリアルアドオンも使えない環境（主に Windows）向け。
+    受信したバイト列は BLE と同じ LineAssembler で行にしてアプリへ送る。
+    """
+
+    name = "pyserial"
+    kind = KIND_SERIAL
+
+    def __init__(self, baudrate: int = SERIAL_BAUDRATE) -> None:
+        super().__init__()
+        self.baudrate = baudrate
+        self._serial: Any = None
+        self._import_error: Optional[str] = None
+        self._links: Dict[str, _SerialLink] = {}
+
+    def _load(self) -> Any:
+        if self._serial is None and self._import_error is None:
+            try:
+                import serial  # noqa: F401  （遅延 import）
+                import serial.tools.list_ports  # noqa: F401
+                self._serial = serial
+            except Exception as exc:
+                self._import_error = "%s（詳細: %s）" % (PYSERIAL_INSTALL_HINT, exc)
+        if self._serial is None:
+            raise BridgeError(ERR_PYSERIAL_MISSING, self._import_error or PYSERIAL_INSTALL_HINT)
+        return self._serial
+
+    def check(self) -> Optional[BridgeError]:
+        try:
+            self._load()
+        except BridgeError as err:
+            return err
+        return None
+
+    async def scan(self, timeout: float, show_all: bool) -> List[Dict[str, Any]]:
+        serial = self._load()
+        loop = asyncio.get_running_loop()
+        ports = await loop.run_in_executor(None, lambda: list(serial.tools.list_ports.comports()))
+        devices: List[Dict[str, Any]] = []
+        for port in ports:
+            usb = port.vid is not None
+            if not show_all and (not usb or "bluetooth" in port.device.lower()):
+                continue   # 既定では USB のシリアルだけ（内蔵の COM1 や Bluetooth の仮想ポートは除く）
+            name = port.description if port.description and port.description != "n/a" else port.device
+            devices.append({
+                "address": port.device,
+                "name": name,
+                "rssi": 0,
+                "usb": usb,
+                "likely_m5": port.vid in KNOWN_SERIAL_VIDS,
+            })
+        devices.sort(key=lambda d: (not d["likely_m5"], d["address"]))
+        return devices
+
+    async def connect(self, address: str, timeout: float) -> str:
+        serial = self._load()
+        if address in self._links:
+            return address
+        loop = asyncio.get_running_loop()
+
+        def open_port() -> Any:
+            port = serial.Serial()
+            port.port = address
+            port.baudrate = self.baudrate
+            port.timeout = 0.05          # 読み取りスレッドが終了要求に気づける間隔
+            port.write_timeout = 1.0
+            port.open()
+            port.reset_input_buffer()    # 開く前に溜まっていた古いデータは捨てる
+            return port
+
+        try:
+            port = await loop.run_in_executor(None, open_port)
+        except Exception as exc:
+            raise BridgeError(
+                ERR_CONNECT_FAILED,
+                "シリアルポートを開けません（他のアプリ＝シリアルモニタ等が使っていないか確認してください）: %s" % exc,
+            )
+        link = _SerialLink(address, port, loop, self._emit_data, self._on_lost)
+        self._links[address] = link
+        link.start()
+        return address
+
+    def _on_lost(self, address: str, reason: str) -> None:
+        link = self._links.pop(address, None)
+        if link is None or link.closing:
+            return
+        link.close()
+        self._emit_disconnected(address, reason)
+
+    async def disconnect(self, address: str) -> None:
+        link = self._links.pop(address, None)
+        if link is None:
+            return
+        await asyncio.get_running_loop().run_in_executor(None, link.close)
+
+    async def send(self, address: str, line: str) -> None:
+        link = self._links.get(address)
+        if link is None:
+            raise BridgeError(ERR_NOT_CONNECTED, "未接続のポートです: %s" % address)
+        payload = (line.rstrip("\r\n") + "\n").encode("utf-8")
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, link.write, payload)
+        except Exception as exc:
+            raise BridgeError(ERR_SEND_FAILED, "シリアルへの書き込みに失敗しました: %s" % exc)
+
+    def connected_addresses(self) -> List[str]:
+        return list(self._links.keys())
+
+
 class MockDevice:
     """疑似 M5 デバイス1台。100Hz で CSV 行を作り、わざと細切れの通知にして届ける。"""
 
-    def __init__(self, address: str, name: str, rssi: int, nus: bool = True, seed: int = 0) -> None:
+    def __init__(self, address: str, name: str, rssi: int, nus: bool = True, seed: int = 0,
+                 description: str = "") -> None:
         self.address = address
-        self.name = name
+        self.name = name                          # 情報行の name=（実機の BLE 名）
+        self.description = description or name    # スキャン結果に出す名前（シリアルはポートの説明）
         self.rssi = rssi
         self.nus = nus
         self.rate = 100
@@ -455,10 +641,18 @@ class MockBackend(Backend):
     name = "mock"
     TICK_SEC = 0.02
 
-    def __init__(self, seed: Optional[int] = None) -> None:
+    def __init__(self, seed: Optional[int] = None, kind: str = KIND_BLE) -> None:
         super().__init__()
+        self.kind = kind
         base = seed if seed is not None else int(time.time())
-        self.devices: Dict[str, MockDevice] = {
+        if kind == KIND_SERIAL:
+            # 疑似 USB シリアルポート（中身は実機ファームと同じ形式で送ってくる M5 デバイス）
+            self.devices = {
+                "MOCK-COM1": MockDevice("MOCK-COM1", "M5-Sensor-MOCK3", 0, seed=base + 11,
+                                        description="USB Single Serial (mock)"),
+            }
+            return
+        self.devices = {
             "AA:BB:CC:00:00:01": MockDevice("AA:BB:CC:00:00:01", "M5-Sensor-MOCK1", -48, seed=base + 1),
             "AA:BB:CC:00:00:02": MockDevice("AA:BB:CC:00:00:02", "M5-Sensor-MOCK2", -63, seed=base + 2),
             # NUS を持たない無関係な機器（--all のときだけ見える。接続は失敗する）
@@ -467,6 +661,10 @@ class MockBackend(Backend):
         }
 
     async def scan(self, timeout: float, show_all: bool) -> List[Dict[str, Any]]:
+        if self.kind == KIND_SERIAL:
+            await asyncio.sleep(0.05)
+            return [{"address": d.address, "name": d.description, "rssi": 0, "usb": True,
+                     "likely_m5": True} for d in self.devices.values()]
         await asyncio.sleep(min(timeout, 0.5))
         result = []
         for dev in self.devices.values():
@@ -474,7 +672,7 @@ class MockBackend(Backend):
                 continue
             result.append({
                 "address": dev.address,
-                "name": dev.name,
+                "name": dev.description,
                 "rssi": dev.rssi + random.randint(-4, 4),
                 "nus": dev.nus,
             })
@@ -490,7 +688,7 @@ class MockBackend(Backend):
         dev = self._get(address)
         if dev.connected:
             return dev.address
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.2 if self.kind == KIND_BLE else 0.05)
         if not dev.nus:
             raise BridgeError(ERR_CONNECT_FAILED,
                               "Nordic UART Service がありません（センサー用ファームウェアではない機器です）")
@@ -575,6 +773,7 @@ class Bridge:
         backend: Backend,
         send: SendFunc,
         *,
+        serial_backend: Optional[Backend] = None,
         flush_interval: float = 0.02,
         idle_timeout: float = 10.0,
         managed: bool = False,
@@ -584,7 +783,11 @@ class Bridge:
         show_all: bool = False,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self.backend = backend
+        self.backend = backend                 # BLE（kind="ble"）
+        self.serial_backend = serial_backend   # USB シリアル（kind="serial"）。None なら無効
+        self.backends: Dict[str, Backend] = {KIND_BLE: backend}
+        if serial_backend is not None:
+            self.backends[KIND_SERIAL] = serial_backend
         self.send = send
         self.flush_interval = flush_interval
         self.idle_timeout = idle_timeout
@@ -600,12 +803,14 @@ class Bridge:
         self.last_contact: Optional[float] = None   # 最後にアプリから何か届いた時刻
         self.stopping = False
         self.stop_reason = ""
+        self.kinds: Dict[str, str] = {}        # address -> kind（接続中・接続処理中のもの）
         self._tasks: set = set()
-        self._scan_task: Optional[asyncio.Future] = None
+        self._scan_tasks: Dict[str, asyncio.Future] = {}
         self._connecting: set = set()
 
-        backend.on_data = self.on_device_data
-        backend.on_disconnected = self.on_device_disconnected
+        for each in self.backends.values():
+            each.on_data = self.on_device_data
+            each.on_disconnected = self.on_device_disconnected
 
     # --- 送信ヘルパー -------------------------------------------------------
 
@@ -620,8 +825,9 @@ class Bridge:
         self.emit({"type": "log", "level": level, "message": message})
 
     def status(self, address: str, connected: bool, state: str,
-               error: Optional[BridgeError] = None) -> None:
+               error: Optional[BridgeError] = None, kind: Optional[str] = None) -> None:
         msg: Dict[str, Any] = {"type": "status", "address": address,
+                               "kind": kind or self.kinds.get(address, KIND_BLE),
                                "connected": connected, "state": state}
         if error is not None:
             msg["error"] = error.code
@@ -644,6 +850,21 @@ class Bridge:
             msg["ready"] = False
             msg["error"] = problem.code
             msg["message"] = problem.message
+        # USB シリアル（任意機能）。無効なら null
+        if self.serial_backend is None:
+            msg["serial"] = None
+        else:
+            serial: Dict[str, Any] = {
+                "ready": True,
+                "backend": self.serial_backend.name,
+                "connected": self.serial_backend.connected_addresses(),
+            }
+            serial_problem = self.serial_backend.check()
+            if serial_problem is not None:
+                serial["ready"] = False
+                serial["error"] = serial_problem.code
+                serial["message"] = serial_problem.message
+            msg["serial"] = serial
         return msg
 
     # --- コマンド処理 -------------------------------------------------------
@@ -665,29 +886,43 @@ class Bridge:
         self.last_contact = self.clock()
         cmd = str(message.get("cmd", message.get("type", ""))).lower()
         address = str(message.get("address", ""))
+        # kind 省略時は、接続中ならその種類、それ以外は BLE（kind が無かった版のアプリと互換）
+        kind = str(message.get("kind", "") or self.kinds.get(address, KIND_BLE)).lower()
 
         if cmd == "hello":
             self.emit(self.hello_message())
         elif cmd == "ping":
-            self.emit({"type": "pong", "connected": self.backend.connected_addresses(),
-                       "scanning": self.is_scanning()})
+            pong: Dict[str, Any] = {"type": "pong", "connected": self.backend.connected_addresses(),
+                                    "scanning": self.is_scanning(KIND_BLE)}
+            if self.serial_backend is not None:
+                pong["serial_connected"] = self.serial_backend.connected_addresses()
+                pong["serial_scanning"] = self.is_scanning(KIND_SERIAL)
+            self.emit(pong)
+        elif cmd in ("scan", "connect", "disconnect", "send") and kind not in self.backends:
+            text = "ブリッジがこの接続方式（%s）に対応していません" % kind
+            self.log("warn", "%s（%s）" % (text, cmd))
+            if cmd == "connect" and address:
+                self.status(address, False, "disconnected", BridgeError(ERR_UNSUPPORTED, text), kind=kind)
+            elif cmd == "scan":
+                self.emit({"type": "devices", "kind": kind, "devices": [], "all": False,
+                           "error": ERR_UNSUPPORTED, "message": text})
         elif cmd == "scan":
             timeout = _as_float(message.get("timeout"), self.scan_timeout, 1.0, 30.0)
             show_all = bool(message.get("all", self.show_all))
-            self.start_scan(timeout, show_all)
+            self.start_scan(timeout, show_all, kind)
         elif cmd == "connect":
             if not address:
                 self.log("warn", "connect に address がありません")
                 return
-            self._spawn(self._connect(address))
+            self._spawn(self._connect(address, kind))
         elif cmd == "disconnect":
             if not address:
                 self.log("warn", "disconnect に address がありません")
                 return
-            self._spawn(self._disconnect(address))
+            self._spawn(self._disconnect(address, kind))
         elif cmd == "send":
             line = str(message.get("line", ""))
-            self._spawn(self._send_line(address, line))
+            self._spawn(self._send_line(address, line, kind))
         elif cmd == "bye":
             # アプリ終了時（手動起動のブリッジ）: デバイスは切断し、次のアプリを待つ
             self._spawn(self._disconnect_all("アプリが終了しました"))
@@ -697,29 +932,31 @@ class Bridge:
         else:
             self.log("warn", "不明なコマンドです: %s" % cmd)
 
-    def is_scanning(self) -> bool:
-        return self._scan_task is not None and not self._scan_task.done()
+    def is_scanning(self, kind: str = KIND_BLE) -> bool:
+        task = self._scan_tasks.get(kind)
+        return task is not None and not task.done()
 
-    def start_scan(self, timeout: float, show_all: bool) -> None:
-        if self.is_scanning():
+    def start_scan(self, timeout: float, show_all: bool, kind: str = KIND_BLE) -> None:
+        if kind not in self.backends or self.is_scanning(kind):
             return   # 実行中のスキャン結果がそのまま返る
-        self._scan_task = self._spawn(self._scan(timeout, show_all))
+        self._scan_tasks[kind] = self._spawn(self._scan(timeout, show_all, kind))
 
-    async def _scan(self, timeout: float, show_all: bool) -> None:
-        self.emit({"type": "scanning", "active": True, "timeout": timeout})
+    async def _scan(self, timeout: float, show_all: bool, kind: str = KIND_BLE) -> None:
+        self.emit({"type": "scanning", "kind": kind, "active": True, "timeout": timeout})
         try:
-            devices = await self.backend.scan(timeout, show_all)
-            self.emit({"type": "devices", "devices": devices, "all": show_all})
+            devices = await self.backends[kind].scan(timeout, show_all)
+            self.emit({"type": "devices", "kind": kind, "devices": devices, "all": show_all})
         except Exception as exc:
             err = classify_ble_error(exc, ERR_SCAN_FAILED)
-            self.log("error", "スキャンに失敗しました: %s" % err.message)
-            self.emit({"type": "devices", "devices": [], "all": show_all,
+            self.log("error", "スキャンに失敗しました（%s）: %s" % (kind, err.message))
+            self.emit({"type": "devices", "kind": kind, "devices": [], "all": show_all,
                        "error": err.code, "message": err.message})
 
-    async def _connect(self, address: str) -> None:
+    async def _connect(self, address: str, kind: str = KIND_BLE) -> None:
         if address in self._connecting:
             return
         self._connecting.add(address)
+        self.kinds[address] = kind
         self.status(address, False, "connecting")
         # 行の組み立てバッファは接続「前」に空にする。backend.connect() の中で通知の購読
         # （start_notify）が始まり、戻る前に最初の通知（情報行）が届くことがあるため、
@@ -727,7 +964,8 @@ class Bridge:
         self.assemblers.pop(address, None)
         self.pending.pop(address, None)
         try:
-            real = await self.backend.connect(address, self.connect_timeout)
+            real = await self.backends[kind].connect(address, self.connect_timeout)
+            self.kinds[real] = kind
             self.assemblers.setdefault(real, LineAssembler())
             self.pending.setdefault(real, [])
             self.status(real, True, "connected")
@@ -737,34 +975,41 @@ class Bridge:
             self.assemblers.pop(address, None)
             self.pending.pop(address, None)
             self.status(address, False, "disconnected", err)
+            self.kinds.pop(address, None)
             self.log("error", "接続に失敗しました: %s: %s" % (address, err.message))
         finally:
             self._connecting.discard(address)
 
-    async def _disconnect(self, address: str) -> None:
+    async def _disconnect(self, address: str, kind: Optional[str] = None) -> None:
+        kind = kind or self.kinds.get(address, KIND_BLE)
+        backend = self.backends.get(kind)
         try:
-            await self.backend.disconnect(address)
+            if backend is not None:
+                await backend.disconnect(address)
         except Exception as exc:
             self.log("warn", "切断処理でエラー（切断扱いにします）: %s" % exc)
         self.flush()
         self.assemblers.pop(address, None)
         self.pending.pop(address, None)
-        self.status(address, False, "disconnected")
+        self.status(address, False, "disconnected", kind=kind)
+        self.kinds.pop(address, None)
 
     async def _disconnect_all(self, reason: str) -> None:
-        addresses = self.backend.connected_addresses()
-        if addresses:
-            self.log("info", "%s。%d 台を切断します" % (reason, len(addresses)))
-        for address in addresses:
-            await self._disconnect(address)
+        targets = [(address, kind) for kind, backend in self.backends.items()
+                   for address in backend.connected_addresses()]
+        if targets:
+            self.log("info", "%s。%d 台を切断します" % (reason, len(targets)))
+        for address, kind in targets:
+            await self._disconnect(address, kind)
 
-    async def _send_line(self, address: str, line: str) -> None:
+    async def _send_line(self, address: str, line: str, kind: Optional[str] = None) -> None:
         clean = line.strip()
         if not clean or len(clean) > MAX_COMMAND_LENGTH or "\n" in clean or "\r" in clean:
             self.log("warn", "送信できないコマンドです: %r" % line)
             return
+        backend = self.backends.get(kind or self.kinds.get(address, KIND_BLE), self.backend)
         try:
-            await self.backend.send(address, clean)
+            await backend.send(address, clean)
         except Exception as exc:
             err = classify_ble_error(exc, ERR_SEND_FAILED)
             self.log("error", "コマンド送信に失敗しました: %s: %s" % (address, err.message))
@@ -788,6 +1033,7 @@ class Bridge:
         self.assemblers.pop(address, None)
         self.pending.pop(address, None)
         self.status(address, False, "disconnected", BridgeError(ERR_LINK_LOST, reason))
+        self.kinds.pop(address, None)
         self.log("warn", "%s: %s" % (address, reason))
 
     def flush(self) -> int:
@@ -799,7 +1045,8 @@ class Bridge:
             while queue:
                 chunk = queue[:MAX_LINES_PER_PACKET]
                 del queue[:MAX_LINES_PER_PACKET]
-                self.emit({"type": "data", "address": address, "lines": chunk})
+                self.emit({"type": "data", "address": address,
+                           "kind": self.kinds.get(address, KIND_BLE), "lines": chunk})
                 sent += 1
         return sent
 
@@ -843,10 +1090,11 @@ class Bridge:
     async def shutdown(self) -> None:
         for task in list(self._tasks):
             task.cancel()
-        try:
-            await asyncio.wait_for(self.backend.close(), timeout=5.0)
-        except Exception:
-            pass
+        for backend in self.backends.values():
+            try:
+                await asyncio.wait_for(backend.close(), timeout=5.0)
+            except Exception:
+                pass
 
     def _spawn(self, coro: Any) -> asyncio.Future:
         task = asyncio.ensure_future(coro)
@@ -974,6 +1222,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="アプリの UDP ポート（既定 %(default)s）")
     parser.add_argument("--mock", action="store_true",
                         help="bleak を使わず疑似デバイス2台で動かす（開発・テスト用）")
+    parser.add_argument("--no-serial", action="store_true",
+                        help="USB シリアル受信（kind=serial）を無効にする")
     parser.add_argument("--all", action="store_true",
                         help="スキャン結果を M5 センサーに絞らない（全 BLE 機器を返す）")
     parser.add_argument("--scan-timeout", type=float, default=4.0,
@@ -987,11 +1237,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="データをまとめて送る間隔（ミリ秒）")
     parser.add_argument("--scan-once", action="store_true",
                         help="UDP を使わず、1回スキャンして結果を表示して終了する（動作確認用）")
+    parser.add_argument("--serial", action="store_true",
+                        help="--scan-once で BLE の代わりに USB シリアルポートを一覧する")
     parser.add_argument("--version", action="version", version="ble_bridge " + VERSION)
     return parser
 
 
-async def serve(args: argparse.Namespace, backend: Backend) -> int:
+async def serve(args: argparse.Namespace, backend: Backend,
+                serial_backend: Optional[Backend] = None) -> int:
     try:
         endpoint = UdpEndpoint(args.port, args.app_port)
     except OSError as exc:
@@ -1003,6 +1256,7 @@ async def serve(args: argparse.Namespace, backend: Backend) -> int:
     bridge = Bridge(
         backend,
         endpoint.send,
+        serial_backend=serial_backend,
         flush_interval=max(0.005, args.flush_ms / 1000.0),
         idle_timeout=args.idle_timeout,
         managed=managed,
@@ -1019,6 +1273,13 @@ async def serve(args: argparse.Namespace, backend: Backend) -> int:
              "自動起動" if managed else "手動起動"), file=sys.stderr)
     if problem is not None:
         print("[ble_bridge] 注意: %s" % problem.message, file=sys.stderr)
+    if serial_backend is None:
+        print("[ble_bridge] USB シリアル受信: 無効（--no-serial）", file=sys.stderr)
+    else:
+        serial_problem = serial_backend.check()
+        print("[ble_bridge] USB シリアル受信: %s" % (
+            "有効（%s）" % serial_backend.name if serial_problem is None
+            else "使えません（%s）" % serial_problem.message), file=sys.stderr)
 
     # 起動を知らせる（アプリが先に待っていればすぐ気づける）
     bridge.emit(bridge.hello_message())
@@ -1042,6 +1303,12 @@ async def scan_once(args: argparse.Namespace, backend: Backend) -> int:
         err = classify_ble_error(exc, ERR_SCAN_FAILED)
         print("スキャンに失敗しました [%s]: %s" % (err.code, err.message), file=sys.stderr)
         return 1
+    if getattr(backend, "kind", KIND_BLE) == KIND_SERIAL:
+        print("%d 個のシリアルポートが見つかりました%s" % (
+            len(devices), "" if args.all else "（USB のみ。すべては --all）"))
+        for d in devices:
+            print("  %-40s %s%s" % (d["address"], d["name"], "  ← M5 でよく使う USB 変換" if d.get("likely_m5") else ""))
+        return 0
     print("%d 台見つかりました%s" % (len(devices), "" if args.all else "（M5センサーのみ。全機器は --all）"))
     for d in devices:
         print("  %-40s %-24s RSSI %4d %s" % (d["address"], d["name"] or "(名前なし)", d["rssi"],
@@ -1052,10 +1319,16 @@ async def scan_once(args: argparse.Namespace, backend: Backend) -> int:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
     backend: Backend = MockBackend() if args.mock else BleakBackend()
+    serial_backend: Optional[Backend] = None
+    if not args.no_serial:
+        serial_backend = MockBackend(kind=KIND_SERIAL) if args.mock else SerialBackend()
     try:
         if args.scan_once:
+            if args.serial:
+                return asyncio.run(scan_once(args, MockBackend(kind=KIND_SERIAL) if args.mock
+                                             else SerialBackend()))
             return asyncio.run(scan_once(args, backend))
-        return asyncio.run(serve(args, backend))
+        return asyncio.run(serve(args, backend, serial_backend))
     except KeyboardInterrupt:
         return 0
 
