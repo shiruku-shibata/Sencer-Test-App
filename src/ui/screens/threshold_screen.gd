@@ -2016,7 +2016,8 @@ func _ask(text: String, on_ok: Callable, on_cancel: Callable = Callable()) -> vo
 	_confirm_ok = on_ok
 	_confirm_cancel = on_cancel
 	_confirm.dialog_text = text
-	_confirm.popup_centered()
+	if _confirm.is_inside_tree():   # 画面だけを組み立てる自動テスト（ツリー外）では表示しない
+		_confirm.popup_centered()
 
 
 func _on_confirm_result(accepted: bool) -> void:

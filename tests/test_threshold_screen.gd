@@ -5,7 +5,7 @@ extends "res://tests/test_case.gd"
 ## SensorManager はツリーに入れない（_ready で実機やブリッジを探しに行かないように）。
 ## デモの Provider だけを登録し、時刻は time_source を差し替えて 10ms ずつ進める。
 ## 画面はツリーに入れない（フレームを進めないので _process・_input は呼ばれない）。
-## 確認ダイアログはツリー外では表示できない（エンジンのエラーになる）ので、ダイアログの中身と
+## 確認ダイアログはツリー外では表示されない（ThresholdScreen._ask）ので、ダイアログの文言と
 ## OK/キャンセル時の処理（_confirm_ok / _on_confirm_result）で確かめる。
 ## 軸は _apply_axes() で直接決める（AxisSelector.set_axes() はユーザー設定に保存するので使わない）。
 
@@ -148,7 +148,6 @@ func test_pause_during_baseline_interrupts_with_message() -> void:
 # ------------------------------------------------------------ 推奨値の適用（PR #11 レビュー 低-2）
 
 func test_apply_overlap_recommendation_asks_first() -> void:
-	allow_engine_errors()   # ツリー外でダイアログを開こうとしたエラー（上のコメント参照）
 	_screen._apply_axes([GZ])
 	_screen._analyzer.restore_measurement({
 		"baseline": {GZ: {"mean": 0.0, "stddev": 20.0, "min": -100.0, "max": 100.0, "count": 300}},
