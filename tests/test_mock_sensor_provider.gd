@@ -205,3 +205,70 @@ func test_baseline_finishes_by_virtual_time_even_with_large_frames() -> void:
 	assert_true(a.has_baseline())
 	assert_eq(a.baseline()[SensorAxis.Id.GX]["count"], 300, "100Hz × 3 秒ちょうど")
 	p.reading_received.disconnect(a.feed)
+
+
+# ------------------------------------------------------------ デモの振り（PR #11 レビュー 中-4）
+
+## gZ が level 以上になった区間の開始時刻（＝振りの開始）の一覧。
+func _swing_starts(readings: Array, level: float = 60.0) -> Array:
+	var starts: Array = []
+	var inside := false
+	for r: SensorReading in readings:
+		var over := r.gyro.z >= level
+		if over and not inside:
+			starts.append(r.timestamp_ms)
+		inside = over
+	return starts
+
+
+func _run_demo(p: MockSensorProvider, now: Array, ms: int) -> void:
+	for _i in ms / 10:
+		now[0] += 10
+		p.poll(0.01)
+
+
+## 以前は 1 サンプルごとに 1.2% の確率でランダムに跳ねていた（静止測定にも入り、品質が「重なり」になる）。
+func test_demo_swings_on_a_fixed_rhythm_and_is_quiet_between() -> void:
+	var now := [1000]
+	var got: Array = []
+	var p := _fake_clock_provider(now, got)
+	p.open_device("demo-01")
+	_run_demo(p, now, 20000)
+	var starts := _swing_starts(got)
+	assert_ge(float(starts.size()), 5.0, "20 秒で 5 回以上振る")
+	for i in range(1, starts.size()):
+		assert_almost_eq(float(int(starts[i]) - int(starts[i - 1])),
+				float(MockSensorProvider.DEMO_GESTURE_PERIOD_MS), 30.0, "一定のリズム（%d 回目）" % i)
+	var rest_peak := 0.0
+	var swing_peak := 0.0
+	for r: SensorReading in got:
+		var near_swing := false
+		for s in starts:
+			if r.timestamp_ms >= int(s) - 100 and r.timestamp_ms < int(s) + MockSensorProvider.DEMO_GESTURE_MS + 50:
+				near_swing = true
+		if near_swing:
+			swing_peak = maxf(swing_peak, r.gyro.z)
+		else:
+			rest_peak = maxf(rest_peak, absf(r.gyro.z))
+	assert_lt(rest_peak, 10.0, "振っていない間の gZ は小さなノイズだけ")
+	assert_gt(swing_peak, 200.0, "振りの gZ は大きい")
+
+
+func test_hold_still_and_gesture_soon() -> void:
+	var now := [1000]
+	var got: Array = []
+	var p := _fake_clock_provider(now, got)
+	p.open_device("demo-01")
+	_run_demo(p, now, 1500)   # 最初の振り（約 2 秒後）の直前
+	p.hold_still(3500)
+	got.clear()
+	_run_demo(p, now, 3500)
+	assert_eq(_swing_starts(got), [], "hold_still の間は振らない")
+	got.clear()
+	var called_at: int = p.clock_ms()
+	p.gesture_soon(400)       # 振らない期間が終わってから呼ぶ
+	_run_demo(p, now, 1000)
+	var starts := _swing_starts(got)
+	assert_eq(starts.size(), 1, "gesture_soon で 1 回振る")
+	if starts.size() == 1:
+		assert_almost_eq(float(int(starts[0]) - called_at), 400.0, 80.0, "約 400ms 後に振り始める")

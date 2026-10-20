@@ -156,8 +156,8 @@ for name in "${CASE_NAMES[@]}"; do
     note "   FAIL C# $name: 生成コードに 'public class MotionDetector' の行が見つかりません"
     failures=$((failures + 1))
   fi
-  printf '            case "%s": { var d = new MotionDetector_%s(); feed = d.Feed; break; }\n' "$name" "$name" \
-    >> "$WORK/cs_cases.txt"
+  printf '            case "%s": { var d = new MotionDetector_%s(); feed = d.Feed; var u = new MotionDetector_%s(); update = u.Update; interval = MotionDetector_%s.SampleIntervalMs; break; }\n' \
+    "$name" "$name" "$name" "$name" >> "$WORK/cs_cases.txt"
 done
 awk -v f="$WORK/cs_cases.txt" '$0 == "// @CASES@" { while ((getline l < f) > 0) print l; next } { print }' \
   "$SCRIPT_DIR/Runner.cs.in" > "$CS_DIR/Runner.cs"

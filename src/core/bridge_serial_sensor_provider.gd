@@ -21,7 +21,7 @@ var _serial_info: Variant = null              ## hello の "serial"（null = ブ
 var _known: Dictionary = {}                   ## address -> 表示名（ポートの説明）
 var _connected: Dictionary = {}               ## address -> true
 var _connecting: Dictionary = {}              ## address -> 経過秒
-var _cancelled: Dictionary = {}               ## 接続待ちの間に切断を押された address -> true
+var _cancelled: Dictionary = {}               ## 切断を押し、ブリッジの切断完了（status disconnected）を待っている address -> true
 var _device_errors: Dictionary = {}           ## address -> 直近のエラー文
 var _device_info: Dictionary = {}             ## address -> 情報行（model= を含む行だけ）
 var _device_replies: Dictionary = {}          ## address -> 直近のその他の '#' 行
@@ -73,9 +73,9 @@ func open_device(device_id: String) -> bool:
 
 
 func close_device(device_id: String) -> void:
-	if _connecting.has(device_id):
-		_connecting.erase(device_id)
-		_cancelled[device_id] = true
+	_connecting.erase(device_id)
+	# 切断完了までは、それ以前に出た pong の connected で接続済みに戻さない（BleSensorProvider と同じ）
+	_cancelled[device_id] = true
 	_host.bridge_send({"cmd": "disconnect", "kind": KIND, "address": device_id})
 	if _connected.erase(device_id):
 		connection_changed.emit(device_id, false)

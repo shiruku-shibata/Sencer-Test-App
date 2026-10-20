@@ -181,6 +181,64 @@ func test_save_overwrites_same_name() -> void:
 	assert_eq(ThresholdProfile.list_files_in(dir).size(), 1)
 
 
+## 名前が違うのにファイル名が重なるプロファイル（大文字小文字だけ違う・記号の置き換え・切り詰め）は
+## 上書きせず、連番を付けた別ファイルに保存する（PR #11 レビュー 中-1）。
+func test_save_never_overwrites_a_differently_named_profile() -> void:
+	var dir := make_temp_dir()
+	var long_name := "x".repeat(ThresholdProfile.MAX_FILE_NAME_LENGTH)
+	var names := ["Swing", "swing", "a/b", "a:b", long_name + "_v1", long_name + "_v2", "a.", "a"]
+	var paths: Dictionary = {}
+	for i in names.size():
+		var p := ThresholdProfile.new()
+		p.name = names[i]
+		p.note = str(i)
+		var path := p.save_to_dir(dir)
+		assert_false(path.is_empty(), names[i])
+		paths[path.to_lower()] = true
+	assert_eq(paths.size(), names.size(), "大文字小文字を無視しても、すべて別のファイル")
+	var files := ThresholdProfile.list_files_in(dir)
+	assert_eq(files.size(), names.size(), "どれも消えていない")
+	var loaded: Dictionary = {}
+	for e in files:
+		var q := ThresholdProfile.load_file(e["path"])
+		loaded[q.name] = q.note
+	for i in names.size():
+		assert_eq(loaded.get(names[i], ""), str(i), "「%s」の中身が残っている" % names[i])
+
+
+func test_save_path_suffix_and_existing_path() -> void:
+	var dir := make_temp_dir()
+	var a := ThresholdProfile.new()
+	a.name = "a/b"
+	assert_eq(a.existing_path_in(dir), "", "フォルダが無ければ既存なし")
+	var path_a := a.save_to_dir(dir)
+	assert_eq(path_a.get_file(), "a_b.json")
+	var b := ThresholdProfile.new()
+	b.name = "a:b"
+	assert_eq(b.existing_path_in(dir), "", "名前が違えば既存扱いにしない")
+	assert_eq(b.save_path_in(dir).get_file(), "a_b_2.json")
+	var path_b := b.save_to_dir(dir)
+	assert_eq(path_b.get_file(), "a_b_2.json")
+	# 同じ名前で保存し直すと、連番のファイルでもそのファイルを上書きする
+	b.note = "更新"
+	assert_eq(b.existing_path_in(dir), path_b)
+	assert_eq(b.save_to_dir(dir), path_b)
+	assert_eq(ThresholdProfile.load_file(path_b).note, "更新")
+	assert_eq(ThresholdProfile.load_file(path_a).name, "a/b", "別名のほうは消えていない")
+	assert_eq(ThresholdProfile.list_files_in(dir).size(), 2)
+
+
+func test_save_does_not_clobber_unreadable_file() -> void:
+	var dir := make_temp_dir()
+	var f := FileAccess.open(dir.path_join("broken.json"), FileAccess.WRITE)
+	f.store_string("{ これは壊れた JSON")
+	f.close()
+	var p := ThresholdProfile.new()
+	p.name = "broken"
+	assert_eq(p.save_to_dir(dir).get_file(), "broken_2.json", "読めないファイルも他人のものとして残す")
+	assert_eq(FileAccess.get_file_as_string(dir.path_join("broken.json")), "{ これは壊れた JSON")
+
+
 func test_unsafe_names_are_sanitized() -> void:
 	var dir := make_temp_dir()
 	var p := ThresholdProfile.new()
@@ -199,6 +257,9 @@ func test_safe_file_name() -> void:
 	assert_eq(ThresholdProfile.safe_file_name(".hidden"), "_hidden")
 	assert_eq(ThresholdProfile.safe_file_name("tab\there"), "tab_here")
 	assert_eq(ThresholdProfile.safe_file_name("CON"), "_CON")
+	assert_eq(ThresholdProfile.safe_file_name("com9"), "_com9")
+	assert_eq(ThresholdProfile.safe_file_name("a."), "a_", "末尾の . は Windows で消えるので置き換える")
+	assert_eq(ThresholdProfile.safe_file_name("a. ."), "a. _")
 	assert_eq(ThresholdProfile.safe_file_name("x".repeat(200)).length(), ThresholdProfile.MAX_FILE_NAME_LENGTH)
 
 
@@ -335,3 +396,61 @@ func test_gdscript_snippet_compiles_and_matches_detector() -> void:
 				fires += 1
 		assert_eq(mismatches, 0, "combine=%d" % combine)
 		assert_gt(fires, 0, "判定が起きている（比較が意味を持つ）")
+
+
+## 生成コードの update() は SAMPLE_INTERVAL_MS ごとにだけ判定するので、ゲームのループが速く回って
+## 同じ値を何度も渡しても、測定時（100Hz）と同じ判定になる（PR #11 レビュー 中-3）。
+## 以前は平滑化 5 で、1 サンプルだけの跳ね 6 回が 100Hz では 0 回、1000Hz で呼ぶと 6 回判定されていた。
+func test_gdscript_snippet_update_is_independent_of_call_rate() -> void:
+	var p := ThresholdProfile.new()
+	p.smoothing_window = 5
+	p.sample_rate_hz = 100.0
+	p.rules.append(ThresholdRule.new(GZ, 100.0, Dir.POSITIVE, 20.0, 200))
+	var script := GDScript.new()
+	script.source_code = p.to_code_snippet("gdscript")
+	assert_eq(script.reload(), OK, "生成コードがコンパイルできる")
+	if not script.can_instantiate():
+		return
+	assert_eq(script.get_script_constant_map().get("SAMPLE_INTERVAL_MS"), 10)
+
+	# 100Hz の元信号: 静止 0 に、1 サンプルだけの 300 deg/s の跳ね（ノイズ）と、200ms の本物の振り
+	var src: Array[float] = []
+	for i in 1200:
+		var v := 0.0
+		if i % 200 == 50:
+			v = 300.0
+		elif i % 200 >= 120 and i % 200 < 140:
+			v = 250.0
+		src.append(v)
+
+	var detector := p.make_detector()
+	var expected := 0
+	for i in src.size():
+		if detector.feed(SensorReading.new("x", i * 10, Vector3.ZERO, Vector3(0, 0, src[i]))):
+			expected += 1
+	assert_eq(expected, 6, "アプリの判定: 跳ねでは判定せず、振り 6 回だけ")
+
+	for loop_ms in [1, 3, 10]:
+		var game_side: RefCounted = script.new()
+		var fires := 0
+		var now := 0
+		while now < src.size() * 10:
+			var v := src[now / 10]   # IMU は 10ms ごとに更新（その間は同じ値を読む）
+			if game_side.call("update", Vector3.ZERO, Vector3(0, 0, v), now):
+				fires += 1
+			now += loop_ms
+		assert_eq(fires, expected, "ループ %d ms ごとに update() しても同じ回数" % loop_ms)
+
+
+func test_snippet_header_shows_sample_rate() -> void:
+	var p := _sample_profile()
+	p.sample_rate_hz = 50.0
+	for lang in ["cpp", "gdscript", "csharp"]:
+		var code := p.to_code_snippet(lang)
+		assert_contains(code, "測定時のサンプルレート: 50.0 Hz", lang)
+		assert_contains(code, "20", lang)
+	assert_contains(p.to_code_snippet("cpp"), "SAMPLE_INTERVAL_MS = 20;")
+	assert_contains(p.to_code_snippet("csharp"), "SampleIntervalMs = 20;")
+	p.sample_rate_hz = 0.0
+	assert_eq(p.sample_interval_ms(), 10, "不明なら 100Hz と仮定")
+	assert_contains(p.to_code_snippet("cpp"), "不明なため、100 Hz")

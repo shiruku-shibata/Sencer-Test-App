@@ -31,7 +31,7 @@ tests/snippets/run.sh
    SKIP: dotnet も mcs/mono も見つかりません
 
 == 結果 ==
-   C++: OK（13 シナリオすべて一致）
+   C++: OK（14 シナリオすべて一致）
    C#: SKIP（コンパイラなし）
 == 不一致なし ==
 ```
@@ -56,7 +56,11 @@ tests/snippets/run.sh
 2. C++ は、`driver.cpp` に生成コードを `#include` して `-std=c++11 -Wall -Wextra -Werror` でコンパイルします。
    - `feed(a, g, t)`（値を直接渡す）の判定を期待値と 1 サンプルずつ比べます。
    - 同時に、`update(t)`（`M5.Imu.getAccelData / getGyroData` から読む）が `feed()` と同じ判定になることも確かめます。
+     サンプルの間にも `update()` を 1ms ごとに余分に呼び、`SAMPLE_INTERVAL_MS`（測定時のサンプル間隔）ごとにしか読まない
+     ＝ `loop()` の回る速さで判定や平滑化が変わらないことも確かめます。
 3. C# は、各シナリオのクラス名を `MotionDetector_<シナリオ名>` に変えて、`Runner.cs.in` と一緒に 1 つのプログラムにして比べます。
+   `Update()` についても C++ と同じ確認をします。
+4. GDScript の `update()` は `tests/test_threshold_profile.gd` で、ループ 1 / 3 / 10ms ごとに呼んでも判定回数が変わらないことを確かめます。
 
 ## シナリオ
 
@@ -73,6 +77,7 @@ tests/snippets/run.sh
 | `same_axis_both_ways` | 同じ軸の ＋方向・−方向 を ANY・平滑化 10 |
 | `hys_only_pos` / `hys_only_neg` / `hys_only_abs` | 不応期 0 で、ヒステリシスだけが効く波形（解除条件の違いを検出する） |
 | `refractory_boundary` | ノイズ無し・不応期ちょうどの間隔（「経過 = 不応期」で判定できるかの境界） |
+| `rate_50hz_smooth5` | 50Hz で測ったプロファイル（入力 20ms 間隔・平滑化 5）。`update()` は 20ms ごとにだけ読む |
 
 シナリオを足すときは、`gen_cases.gd` の `_cases()` に追加します。
 

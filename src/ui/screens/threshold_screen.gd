@@ -37,6 +37,8 @@ const LAMP_HOLD_MS := 250
 const LOG_DETECT_INTERVAL_MS := 80             ## ログ判定のやり直しの最短間隔（ドラッグ中に毎フレーム走らせない）
 const LOG_MAX_LISTED_FIRES := 20               ## ⑥に並べる判定位置の最大数
 const LOG_BASELINE_FOREVER_MS := 1 << 30       ## 取り込み時の静止測定は stop() で締めるので、時間では終わらせない
+const DEMO_QUIET_MARGIN_MS := 500              ## デモ: 静止測定の時間よりこれだけ長く振らないでもらう
+const DEMO_TRIAL_GESTURE_DELAY_MS := 400       ## デモ: 試行を始めてから振るまでの時間
 
 const COLOR_THRESHOLD := Color("ff6b6b")
 const COLOR_THRESHOLD_OFF := Color(1.0, 0.42, 0.42, 0.35)
@@ -113,6 +115,8 @@ var _rule_rows: Dictionary = {}                ## axis -> {enabled, direction, t
 # ---- UI（①〜⑤）
 var _baseline_seconds: OptionButton
 var _baseline_button: Button
+var _baseline_cancel_button: Button
+var _trial_cancel_button: Button
 var _baseline_progress: ProgressBar
 var _baseline_grid: GridContainer
 var _baseline_empty: Label
@@ -160,6 +164,7 @@ func setup(manager: SensorManager, logger: LoggingService = null) -> void:
 	_analyzer.baseline_finished.connect(_on_baseline_finished)
 	_analyzer.trial_finished.connect(_on_trial_finished)
 	_analyzer.trial_discarded.connect(func() -> void: _show_message(UIStrings.TH_MSG_TRIAL_DISCARDED))
+	_analyzer.phase_interrupted.connect(_on_phase_interrupted)
 	_detector.fired.connect(_on_detector_fired)
 
 	if _logger != null:
@@ -348,6 +353,9 @@ func _build_step1() -> PanelContainer:
 	_baseline_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_baseline_button.pressed.connect(_on_baseline_pressed)
 	row.add_child(_baseline_button)
+	_baseline_cancel_button = _make_button(UIStrings.TH_PHASE_CANCEL, _on_cancel_phase_pressed)
+	_baseline_cancel_button.tooltip_text = UIStrings.TH_PHASE_CANCEL_TOOLTIP
+	row.add_child(_baseline_cancel_button)
 	box.add_child(row)
 
 	_baseline_progress = ProgressBar.new()
@@ -379,6 +387,9 @@ func _build_step2() -> PanelContainer:
 	_trial_button.custom_minimum_size.x = 170
 	_trial_button.pressed.connect(_toggle_trial)
 	row.add_child(_trial_button)
+	_trial_cancel_button = _make_button(UIStrings.TH_PHASE_CANCEL, _on_cancel_phase_pressed)
+	_trial_cancel_button.tooltip_text = UIStrings.TH_PHASE_CANCEL_TOOLTIP
+	row.add_child(_trial_cancel_button)
 	_trial_count = _make_label("")
 	_trial_count.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(_trial_count)
@@ -1206,7 +1217,11 @@ func _on_baseline_pressed() -> void:
 	if _selected_id.is_empty() or _analyzer.phase() != ThresholdAnalyzer.Phase.IDLE:
 		return
 	_baseline_progress.value = 0.0
-	_analyzer.start_baseline(BASELINE_OPTIONS[_baseline_seconds.selected] * 1000)
+	var duration_ms: int = BASELINE_OPTIONS[_baseline_seconds.selected] * 1000
+	_analyzer.start_baseline(duration_ms)
+	var demo := _demo_provider()
+	if demo != null:
+		demo.hold_still(duration_ms + DEMO_QUIET_MARGIN_MS)   # デモは静止測定の間は振らない
 
 
 func _toggle_trial() -> void:
@@ -1216,6 +1231,18 @@ func _toggle_trial() -> void:
 		ThresholdAnalyzer.Phase.IDLE:
 			if not _selected_id.is_empty():
 				_analyzer.start_trial(0)
+				var demo := _demo_provider()
+				if demo != null:
+					demo.gesture_soon(DEMO_TRIAL_GESTURE_DELAY_MS)   # デモは試行を始めると少し後に1回振る
+
+
+## 選んでいるデバイスがデモ（MockSensorProvider）なら、その Provider。違えば null。
+## デモの振りを測定の手順に合わせるためだけに使う（実機には関係しない）。
+func _demo_provider() -> MockSensorProvider:
+	var device := _manager.registry.get_device(_selected_id)
+	if device == null or device.mode != SensorDevice.Mode.MOCK:
+		return null
+	return _manager.get_provider(SensorDevice.Mode.MOCK) as MockSensorProvider
 
 
 ## Space キーで試行の開始/終了。文字入力中（LineEdit・SpinBox）は通常の入力として扱う。
@@ -1238,6 +1265,32 @@ func _input(event: InputEvent) -> void:
 func _cancel_phase() -> void:
 	if _analyzer.phase() != ThresholdAnalyzer.Phase.IDLE:
 		_analyzer.cancel()
+
+
+## ①②の「中止」ボタン: 実行中の静止測定・試行を結果を残さずに止める。
+func _on_cancel_phase_pressed() -> void:
+	var phase := _analyzer.phase()
+	if phase == ThresholdAnalyzer.Phase.IDLE:
+		return
+	_cancel_phase()
+	_show_message(UIStrings.TH_MSG_PHASE_CANCELLED % _phase_name(phase))
+	_after_phase_aborted(phase)
+
+
+## 受信が途切れて Analyzer が測定を中止したとき（デバイスの一時停止・電波の途切れなど）。
+func _on_phase_interrupted(phase: int, gap_ms: int) -> void:
+	_show_message(UIStrings.TH_MSG_PHASE_INTERRUPTED % [_phase_name(phase), gap_ms / 1000.0])
+	_after_phase_aborted(phase)
+
+
+func _after_phase_aborted(phase: int) -> void:
+	if phase == ThresholdAnalyzer.Phase.BASELINE:
+		_baseline_progress.value = 100.0 if _analyzer.has_baseline() else 0.0
+	_refresh_measurement()
+
+
+static func _phase_name(phase: int) -> String:
+	return UIStrings.TH_PHASE_BASELINE if phase == ThresholdAnalyzer.Phase.BASELINE else UIStrings.TH_PHASE_TRIAL
 
 
 func _has_measurement() -> bool:
@@ -1385,7 +1438,20 @@ func _refresh_recommendations() -> void:
 	_update_all_lines()
 
 
+## 「推奨値を適用」。品質が「重なり」の軸があれば、静止中でも判定されてしまうので確認してから適用する。
 func _apply_recommendation() -> void:
+	var overlapped := PackedStringArray()
+	for axis in _axes:
+		var direction := int(_directions.get(axis, _default_direction(axis)))
+		if str(_analyzer.recommend(axis, direction, _ratio).get("quality", "")) == "overlap":
+			overlapped.append(SensorAxis.label(axis))
+	if overlapped.is_empty():
+		_apply_recommendation_now()
+	else:
+		_ask(UIStrings.TH_CONFIRM_APPLY_OVERLAP % "、".join(overlapped), _apply_recommendation_now)
+
+
+func _apply_recommendation_now() -> void:
 	var applied := 0
 	for axis in _axes:
 		var direction := int(_directions.get(axis, _default_direction(axis)))
@@ -1528,6 +1594,15 @@ func _on_save_pressed() -> void:
 		_show_message(UIStrings.TH_MSG_NAME_REQUIRED)
 		_profile_name.grab_focus()
 		return
+	# 同じ名前のプロファイルがあれば上書きしてよいか確かめる
+	# （名前が違ってファイル名だけ重なる場合は、ThresholdProfile が別のファイル名にする）
+	if not profile.existing_path().is_empty():
+		_ask(UIStrings.TH_CONFIRM_OVERWRITE % profile.name, func() -> void: _save_profile(profile))
+	else:
+		_save_profile(profile)
+
+
+func _save_profile(profile: ThresholdProfile) -> void:
 	var path := profile.save()
 	if path.is_empty():
 		_show_message(UIStrings.TH_MSG_SAVE_FAILED)
@@ -1888,6 +1963,8 @@ func _import_log(as_baseline: bool) -> void:
 		_show_message(UIStrings.TH_LOG_IMPORT_TOO_SHORT)
 		return
 	_importing = true
+	# 記録したログは、途中で間が空いていても（一時停止して記録を続けた等）そのまま取り込む
+	_analyzer.max_gap_ms = 0
 	if as_baseline:
 		_analyzer.start_baseline(LOG_BASELINE_FOREVER_MS)
 	else:
@@ -1895,6 +1972,7 @@ func _import_log(as_baseline: bool) -> void:
 	for i in range(r.x, r.y):
 		_analyzer.feed(_log_readings[i])
 	_analyzer.stop()
+	_analyzer.max_gap_ms = ThresholdAnalyzer.DEFAULT_MAX_GAP_MS
 	_importing = false
 	_update_controls()
 	_show_message((UIStrings.TH_LOG_IMPORTED_BASELINE if as_baseline else UIStrings.TH_LOG_IMPORTED_TRIAL)
@@ -1917,6 +1995,8 @@ func _update_controls() -> void:
 	_baseline_seconds.disabled = phase != ThresholdAnalyzer.Phase.IDLE
 	_trial_button.disabled = not has_device or phase == ThresholdAnalyzer.Phase.BASELINE
 	_trial_button.text = UIStrings.TH_TRIAL_STOP if phase == ThresholdAnalyzer.Phase.TRIAL else UIStrings.TH_TRIAL_START
+	_baseline_cancel_button.disabled = phase != ThresholdAnalyzer.Phase.BASELINE
+	_trial_cancel_button.disabled = phase != ThresholdAnalyzer.Phase.TRIAL
 	var idle := phase == ThresholdAnalyzer.Phase.IDLE
 	_axis_selector.set_editable(idle, UIStrings.AXIS_LOCKED_MEASURING)
 	_smoothing_selector.disabled = not idle
@@ -1936,7 +2016,8 @@ func _ask(text: String, on_ok: Callable, on_cancel: Callable = Callable()) -> vo
 	_confirm_ok = on_ok
 	_confirm_cancel = on_cancel
 	_confirm.dialog_text = text
-	_confirm.popup_centered()
+	if _confirm.is_inside_tree():   # 画面だけを組み立てる自動テスト（ツリー外）では表示しない
+		_confirm.popup_centered()
 
 
 func _on_confirm_result(accepted: bool) -> void:
