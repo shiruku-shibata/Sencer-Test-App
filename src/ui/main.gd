@@ -9,6 +9,12 @@ const SIDEBAR_WIDTH := 200
 const SIDEBAR_PADDING := 12          ## サイドバーの内側の余白 [px]
 const BAR_PADDING_H := 14            ## 上下のバーの左右の余白（本文の余白とそろえる）
 const BAR_PADDING_V := 5
+## ブラウザ版で使う日本語フォント（Noto Sans JP のサブセット, OFL-1.1）。
+## デスクトップ版は OS の日本語フォントを使うので読み込まない（書き出しにも含めない）。
+const WEB_FONT_PATH := "res://assets/fonts/NotoSansJP-Regular-Subset.ttf"
+## この環境変数を 1 にすると、デスクトップでもブラウザ版の見た目（同梱フォント・縮小表示）で起動する（確認用）
+const ENV_WEB_PREVIEW := "SENSOR_WEB_PREVIEW"
+const BASE_SIZE := Vector2i(1280, 800)
 
 var _manager: SensorManager
 var _logger := LoggingService.new()
@@ -28,6 +34,8 @@ var _current_screen := ""
 
 
 func _ready() -> void:
+	if OS.has_feature("web") or OS.get_environment(ENV_WEB_PREVIEW) == "1":
+		_apply_web_look()
 	_manager = SensorManager.new()
 	_manager.name = "SensorManager"
 	add_child(_manager)
@@ -35,6 +43,30 @@ func _ready() -> void:
 	_build_layout()
 	_create_screens()
 	_show_screen(UIStrings.SCREEN_DEVICES)
+
+
+## ブラウザ版の見た目を整える。
+##   - ブラウザには OS の日本語フォントが無いので、同梱フォントを既定のフォントにする
+##     （ダイアログ等の別ウィンドウにも効くよう、テーマではなく既定テーマのフォントを差し替える）
+##   - 画面が 1280x800 より小さいときは、全体を縮小して表示する
+func _apply_web_look() -> void:
+	var font := load(WEB_FONT_PATH) as Font
+	if font != null:
+		var bold := FontVariation.new()
+		bold.base_font = font
+		bold.variation_embolden = 0.8
+		var default_theme := ThemeDB.get_default_theme()
+		default_theme.default_font = font
+		default_theme.set_font("normal_font", "RichTextLabel", font)
+		default_theme.set_font("bold_font", "RichTextLabel", bold)
+		default_theme.set_font("mono_font", "RichTextLabel", font)
+		ThemeDB.fallback_font = font
+	else:
+		push_warning("ブラウザ版のフォントを読み込めませんでした: %s" % WEB_FONT_PATH)
+	var window := get_window()
+	window.content_scale_size = BASE_SIZE
+	window.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+	window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
 
 
 func _build_layout() -> void:
