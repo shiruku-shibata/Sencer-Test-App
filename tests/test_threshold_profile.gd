@@ -181,6 +181,64 @@ func test_save_overwrites_same_name() -> void:
 	assert_eq(ThresholdProfile.list_files_in(dir).size(), 1)
 
 
+## 名前が違うのにファイル名が重なるプロファイル（大文字小文字だけ違う・記号の置き換え・切り詰め）は
+## 上書きせず、連番を付けた別ファイルに保存する（PR #11 レビュー 中-1）。
+func test_save_never_overwrites_a_differently_named_profile() -> void:
+	var dir := make_temp_dir()
+	var long_name := "x".repeat(ThresholdProfile.MAX_FILE_NAME_LENGTH)
+	var names := ["Swing", "swing", "a/b", "a:b", long_name + "_v1", long_name + "_v2", "a.", "a"]
+	var paths: Dictionary = {}
+	for i in names.size():
+		var p := ThresholdProfile.new()
+		p.name = names[i]
+		p.note = str(i)
+		var path := p.save_to_dir(dir)
+		assert_false(path.is_empty(), names[i])
+		paths[path.to_lower()] = true
+	assert_eq(paths.size(), names.size(), "大文字小文字を無視しても、すべて別のファイル")
+	var files := ThresholdProfile.list_files_in(dir)
+	assert_eq(files.size(), names.size(), "どれも消えていない")
+	var loaded: Dictionary = {}
+	for e in files:
+		var q := ThresholdProfile.load_file(e["path"])
+		loaded[q.name] = q.note
+	for i in names.size():
+		assert_eq(loaded.get(names[i], ""), str(i), "「%s」の中身が残っている" % names[i])
+
+
+func test_save_path_suffix_and_existing_path() -> void:
+	var dir := make_temp_dir()
+	var a := ThresholdProfile.new()
+	a.name = "a/b"
+	assert_eq(a.existing_path_in(dir), "", "フォルダが無ければ既存なし")
+	var path_a := a.save_to_dir(dir)
+	assert_eq(path_a.get_file(), "a_b.json")
+	var b := ThresholdProfile.new()
+	b.name = "a:b"
+	assert_eq(b.existing_path_in(dir), "", "名前が違えば既存扱いにしない")
+	assert_eq(b.save_path_in(dir).get_file(), "a_b_2.json")
+	var path_b := b.save_to_dir(dir)
+	assert_eq(path_b.get_file(), "a_b_2.json")
+	# 同じ名前で保存し直すと、連番のファイルでもそのファイルを上書きする
+	b.note = "更新"
+	assert_eq(b.existing_path_in(dir), path_b)
+	assert_eq(b.save_to_dir(dir), path_b)
+	assert_eq(ThresholdProfile.load_file(path_b).note, "更新")
+	assert_eq(ThresholdProfile.load_file(path_a).name, "a/b", "別名のほうは消えていない")
+	assert_eq(ThresholdProfile.list_files_in(dir).size(), 2)
+
+
+func test_save_does_not_clobber_unreadable_file() -> void:
+	var dir := make_temp_dir()
+	var f := FileAccess.open(dir.path_join("broken.json"), FileAccess.WRITE)
+	f.store_string("{ これは壊れた JSON")
+	f.close()
+	var p := ThresholdProfile.new()
+	p.name = "broken"
+	assert_eq(p.save_to_dir(dir).get_file(), "broken_2.json", "読めないファイルも他人のものとして残す")
+	assert_eq(FileAccess.get_file_as_string(dir.path_join("broken.json")), "{ これは壊れた JSON")
+
+
 func test_unsafe_names_are_sanitized() -> void:
 	var dir := make_temp_dir()
 	var p := ThresholdProfile.new()
@@ -199,6 +257,9 @@ func test_safe_file_name() -> void:
 	assert_eq(ThresholdProfile.safe_file_name(".hidden"), "_hidden")
 	assert_eq(ThresholdProfile.safe_file_name("tab\there"), "tab_here")
 	assert_eq(ThresholdProfile.safe_file_name("CON"), "_CON")
+	assert_eq(ThresholdProfile.safe_file_name("com9"), "_com9")
+	assert_eq(ThresholdProfile.safe_file_name("a."), "a_", "末尾の . は Windows で消えるので置き換える")
+	assert_eq(ThresholdProfile.safe_file_name("a. ."), "a. _")
 	assert_eq(ThresholdProfile.safe_file_name("x".repeat(200)).length(), ThresholdProfile.MAX_FILE_NAME_LENGTH)
 
 

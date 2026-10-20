@@ -28,6 +28,9 @@ const FORMAT_VERSION := 1
 const APP_NAME := "Sensor Test App"
 ## 保存ファイル名（拡張子を除く）の最大文字数
 const MAX_FILE_NAME_LENGTH := 64
+const _WINDOWS_RESERVED := ["CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"]
 
 var name: String = ""
 var device_name: String = ""
@@ -181,8 +184,7 @@ static func from_json(text: String) -> ThresholdProfile:
 	return from_dict(data)
 
 
-## DIR に保存して保存先パスを返す（失敗は ""）。ファイル名は name から安全な名前を作る。
-## 同じ名前のファイルがあれば上書きする。
+## DIR に保存して保存先パスを返す（失敗は ""）。保存先の決め方は save_path_in() を参照。
 func save() -> String:
 	return save_to_dir(DIR)
 
@@ -191,7 +193,7 @@ func save() -> String:
 func save_to_dir(dir_path: String) -> String:
 	if not _ensure_dir(dir_path):
 		return ""
-	var path := dir_path.path_join(safe_file_name(name) + ".json")
+	var path := save_path_in(dir_path)
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
 		push_error("しきい値プロファイルを保存できませんでした: %s" % path)
@@ -199,6 +201,55 @@ func save_to_dir(dir_path: String) -> String:
 	file.store_string(to_json())
 	file.close()
 	return path
+
+
+## 保存先のパス（ファイルはまだ書かない）。
+##   ・同じ名前（name が完全一致）のプロファイルが既にあれば、そのファイル（= 上書き）。
+##     上書きしてよいかの確認は画面側で行う（existing_path_in() で調べられる）。
+##   ・無ければ safe_file_name(name) + ".json"。ただし、そのファイル名が既存のファイルと
+##     大文字小文字を無視して重なる場合は、別のプロファイルを消さないよう "_2", "_3" … を付ける。
+##     （記号の置き換え・長さの切り詰めで別の名前が同じファイル名になることがあり、
+##       macOS / Windows のファイルシステムは大文字小文字を区別しないため "Swing" と "swing" も重なる）
+func save_path_in(dir_path: String) -> String:
+	var existing := existing_path_in(dir_path)
+	if not existing.is_empty():
+		return existing
+	var taken: Dictionary = {}
+	if DirAccess.dir_exists_absolute(dir_path):
+		for file_name in DirAccess.get_files_at(dir_path):
+			taken[file_name.to_lower()] = true
+	var base := safe_file_name(name)
+	var candidate := base + ".json"
+	var n := 2
+	while taken.has(candidate.to_lower()):
+		candidate = "%s_%d.json" % [base, n]
+		n += 1
+	return dir_path.path_join(candidate)
+
+
+## このプロファイルと同じ名前（name が完全一致）で保存済みのファイルのパス。無ければ ""。
+func existing_path_in(dir_path: String) -> String:
+	if not DirAccess.dir_exists_absolute(dir_path):
+		return ""
+	# よくある場合（ファイル名 = 安全化した名前）を先に調べ、無ければ残りのファイルも見る
+	# （一覧に実在するファイル名だけを開く。大文字小文字の違う名前で開くと macOS で警告が出るため）
+	var expected := safe_file_name(name) + ".json"
+	var files: Array[String] = []
+	for file_name in DirAccess.get_files_at(dir_path):
+		if file_name == expected:
+			files.push_front(file_name)
+		elif file_name.ends_with(".json"):
+			files.append(file_name)
+	for file_name in files:
+		var p := load_file(dir_path.path_join(file_name))
+		if p != null and p.name == name:
+			return dir_path.path_join(file_name)
+	return ""
+
+
+## DIR 版の existing_path_in()。
+func existing_path() -> String:
+	return existing_path_in(DIR)
 
 
 static func load_file(path: String) -> ThresholdProfile:
@@ -249,7 +300,9 @@ static func open_folder() -> void:
 
 
 ## プロファイル名から安全なファイル名（拡張子なし）を作る。日本語はそのまま使う。
-## / \ : * ? " < > | と制御文字は "_" に置き換え、先頭の "." や Windows の予約名も避ける。
+## / \ : * ? " < > | と制御文字は "_" に置き換え、先頭の "."・末尾の "." と空白・Windows の予約名も避ける。
+## 違う名前が同じファイル名になることはあり得る（記号の置き換え・切り詰め・大文字小文字）ので、
+## 実際の保存先は save_path_in() で決める（既存の別プロファイルは上書きしない）。
 static func safe_file_name(text: String) -> String:
 	var s := ""
 	for ch in text.strip_edges():
@@ -264,8 +317,10 @@ static func safe_file_name(text: String) -> String:
 		s = s.substr(0, MAX_FILE_NAME_LENGTH)
 	if s.is_empty():
 		s = "profile"
-	if s.to_upper().get_basename() in ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4",
-			"LPT1", "LPT2", "LPT3"]:
+	# Windows は末尾の "." と空白を黙って落とすので、"a." と "a" が同じファイルにならないよう置き換える
+	while s.ends_with(".") or s.ends_with(" "):
+		s = s.substr(0, s.length() - 1) + "_"
+	if s.to_upper().get_basename() in _WINDOWS_RESERVED:
 		s = "_" + s
 	return s
 

@@ -1528,6 +1528,15 @@ func _on_save_pressed() -> void:
 		_show_message(UIStrings.TH_MSG_NAME_REQUIRED)
 		_profile_name.grab_focus()
 		return
+	# 同じ名前のプロファイルがあれば上書きしてよいか確かめる
+	# （名前が違ってファイル名だけ重なる場合は、ThresholdProfile が別のファイル名にする）
+	if not profile.existing_path().is_empty():
+		_ask(UIStrings.TH_CONFIRM_OVERWRITE % profile.name, func() -> void: _save_profile(profile))
+	else:
+		_save_profile(profile)
+
+
+func _save_profile(profile: ThresholdProfile) -> void:
 	var path := profile.save()
 	if path.is_empty():
 		_show_message(UIStrings.TH_MSG_SAVE_FAILED)

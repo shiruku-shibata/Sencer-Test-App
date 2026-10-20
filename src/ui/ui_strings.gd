@@ -229,6 +229,7 @@ const TH_CONFIRM_SMOOTHING := "平滑化を変更すると、静止測定と試�
 const TH_CONFIRM_DEVICE := "対象デバイスを変更すると、静止測定と試行の結果が消えます。よろしいですか？"
 const TH_CONFIRM_LOAD := "このプロファイルを読み込むと、今の静止測定と試行の結果は消え、プロファイルに保存されている結果（あれば）に置き換わります。よろしいですか？"
 const TH_CONFIRM_DELETE := "プロファイル「%s」を削除します。よろしいですか？"
+const TH_CONFIRM_OVERWRITE := "プロファイル「%s」は既に保存されています。上書きしますか？"
 
 ## マニュアル（S5）の本文。BBCode で表示する。
 const MANUAL_PAGES := {
