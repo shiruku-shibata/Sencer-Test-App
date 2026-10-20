@@ -13,8 +13,8 @@ var _head: int = 0          ## 次に書き込む位置
 var _last: float = 0.0
 
 
-func _init(capacity: int = 6000) -> void:
-	_capacity = maxi(1, capacity)
+func _init(p_capacity: int = 6000) -> void:
+	_capacity = maxi(1, p_capacity)
 	_data.resize(_capacity)
 
 
