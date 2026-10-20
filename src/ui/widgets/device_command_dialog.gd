@@ -67,11 +67,6 @@ func open_for(device_id: String) -> void:
 		popup_centered()
 
 
-## 開いているデバイスの ID（閉じていれば空）。
-func device_id() -> String:
-	return _device_id if visible else ""
-
-
 ## 応答待ちのコマンド（無ければ空）。
 func pending_command() -> String:
 	return _pending_command
