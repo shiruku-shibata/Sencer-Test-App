@@ -350,6 +350,7 @@ func _on_data(message: Dictionary) -> void:
 
 
 func _on_info_line(address: String, text: String) -> void:
+	_record_device_line(address, text)   # 基底の記録（デバイス操作画面の応答表示に使う）
 	var fields := BleSensorProvider.parse_info_fields(text)
 	if fields.has("model"):
 		_device_info[address] = text
