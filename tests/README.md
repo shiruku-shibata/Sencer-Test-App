@@ -99,6 +99,17 @@ var data := gen.rest(3000)          # 静止 3 秒（100Hz）
 data.append_array(gen.gesture(150, Vector3.ZERO, Vector3(0, 0, 250)))   # gZ を +250 deg/s 振る
 ```
 
+## 生成コード（C++ / C#）の等価性チェック
+
+プロファイルから生成するゲーム用の判定コードを実際にコンパイルし、`ThresholdDetector` と同じ判定になるかを比べます。
+外部のコンパイラ（clang++ / g++、dotnet）を使うので、上の `run_tests.gd` とは別に実行します。
+
+```bash
+tests/snippets/run.sh      # コンパイラが無い言語は SKIP（終了コード 0）
+```
+
+詳しくは [`tests/snippets/README.md`](snippets/README.md) を見てください。
+
 ## テストファイル一覧
 
 | ファイル | 対象 |
