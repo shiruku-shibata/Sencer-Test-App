@@ -2,3 +2,6 @@
 # bleak: MIT License  https://github.com/hbldh/bleak
 # 0.22.3 と 1.x の両方で動く API だけを使っている（Python 3.9 で入る最新は 1.1.x）。
 bleak>=0.22.3,<2
+# pyserial: BSD-3-Clause  https://github.com/pyserial/pyserial
+# 任意機能。有線（USB シリアル）をブリッジ経由で受けるとき（主に Windows）に使う。無くても BLE は動く。
+pyserial>=3.5,<4

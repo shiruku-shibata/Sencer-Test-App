@@ -1,5 +1,5 @@
 @echo off
-rem BLE ブリッジ用の Python 仮想環境（tools\ble_bridge\.venv）を作り、bleak を入れる。Windows 用。
+rem BLE ブリッジ用の Python 仮想環境（tools\ble_bridge\.venv）を作り、bleak と pyserial を入れる。Windows 用。
 rem   tools\ble_bridge\setup.bat
 rem   使う Python を指定する場合: set PYTHON=C:\Path\To\python.exe を実行してから setup.bat
 chcp 65001 >nul

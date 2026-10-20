@@ -7,8 +7,19 @@ signal reading_received(reading: SensorReading)
 signal devices_changed
 signal status_changed
 
+## 有線の方式を選ぶ環境変数（auto / addon / pipe / bridge。既定 auto）
+const ENV_SERIAL_MODE := "SENSOR_SERIAL_MODE"
+## godot ... -- --serial-bridge でも、有線をブリッジ経由にできる
+const CMDLINE_SERIAL_BRIDGE := "--serial-bridge"
+const SERIAL_MODE_AUTO := "auto"
+const SERIAL_MODE_ADDON := "addon"     ## シリアル通信アドオン（SerialSensorProvider）
+const SERIAL_MODE_PIPE := "pipe"       ## OS 標準の stty / cat（PipeSerialSensorProvider。macOS / Linux）
+const SERIAL_MODE_BRIDGE := "bridge"   ## BLEブリッジの pyserial（BridgeSerialSensorProvider。主に Windows）
+
 var registry := DeviceRegistry.new()
 var providers: Array[SensorProvider] = []
+## 実際に使っている有線の方式（SERIAL_MODE_*）
+var serial_mode := SERIAL_MODE_AUTO
 
 var _sample_counter: Dictionary = {}   ## device_id -> 直近1秒の受信数
 var _rate_timer := 0.0
@@ -16,16 +27,50 @@ var _is_shut_down := false
 
 
 func _ready() -> void:
-	# 有線: シリアル通信アドオンがあればそれを使い、無ければOS標準コマンド経由で接続する
-	if SerialPortAdapter.is_addon_available():
-		_add_provider(SerialSensorProvider.new())
-	else:
-		_add_provider(PipeSerialSensorProvider.new())
 	# BLE: 別プロセスのブリッジ（tools/ble_bridge）経由。Python が無くてもアプリは動く
-	_add_provider(BleSensorProvider.new())
+	var ble := BleSensorProvider.new()
+
+	# 有線: 使える方式を1つだけ選ぶ（同じポートを2つの方式で開かないように）
+	var requested := OS.get_environment(ENV_SERIAL_MODE).strip_edges().to_lower()
+	if OS.get_cmdline_user_args().has(CMDLINE_SERIAL_BRIDGE):
+		requested = SERIAL_MODE_BRIDGE
+	serial_mode = choose_serial_mode(requested, SerialPortAdapter.is_addon_available(),
+			PipeSerialSensorProvider.is_supported_os())
+	if not requested.is_empty() and requested != SERIAL_MODE_AUTO and requested != serial_mode:
+		push_warning("有線の方式 %s は使えないため %s を使います" % [requested, serial_mode])
+	match serial_mode:
+		SERIAL_MODE_ADDON:
+			_add_provider(SerialSensorProvider.new())
+		SERIAL_MODE_PIPE:
+			_add_provider(PipeSerialSensorProvider.new())
+		_:
+			# アドオンも OS 標準コマンドも使えない（主に Windows）: ブリッジに pyserial で読んでもらう
+			_add_provider(BridgeSerialSensorProvider.new(ble))
+
+	_add_provider(ble)
 	_add_provider(MockSensorProvider.new())
 	registry.devices_changed.connect(func() -> void: devices_changed.emit())
 	scan_all()
+
+
+## 有線の方式を決める。requested が使えなければ自動選択に戻す。
+## 自動: アドオン → OS 標準コマンド（macOS / Linux）→ ブリッジ経由 の順。
+## ブリッジ経由は Python と pyserial が要るので、他が使えるときは使わない（フォールバック）。
+static func choose_serial_mode(requested: String, addon_available: bool, pipe_available: bool) -> String:
+	match requested:
+		SERIAL_MODE_ADDON:
+			if addon_available:
+				return SERIAL_MODE_ADDON
+		SERIAL_MODE_PIPE:
+			if pipe_available:
+				return SERIAL_MODE_PIPE
+		SERIAL_MODE_BRIDGE:
+			return SERIAL_MODE_BRIDGE
+	if addon_available:
+		return SERIAL_MODE_ADDON
+	if pipe_available:
+		return SERIAL_MODE_PIPE
+	return SERIAL_MODE_BRIDGE
 
 
 func _add_provider(provider: SensorProvider) -> void:

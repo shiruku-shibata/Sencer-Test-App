@@ -211,7 +211,7 @@ class DataTest(BridgeTestBase):
         self.bridge.on_device_data("A1", b",9,1,2,3\n")
         self.bridge.flush()
         data = self.of_type("data")
-        self.assertEqual(data[0], {"type": "data", "address": "A1", "lines": ["1,2,3,4,5,6"]})
+        self.assertEqual(data[0], {"type": "data", "address": "A1", "kind": "ble", "lines": ["1,2,3,4,5,6"]})
         self.assertEqual(data[1]["lines"], ["7,8,9,1,2,3"])
 
     def test_flush_without_data_sends_nothing(self):
@@ -285,7 +285,7 @@ class ConnectOrderTest(BridgeTestBase):
         # 前の接続で組み立て途中だったバイトは、次の接続に持ち越さない
         self.bridge.on_device_data("A1", b"12.5,0.0")
         self.backend = EarlyNotifyBackend(b"1,2,3,4,5,6\n")
-        self.bridge.backend = self.backend
+        self.bridge.backend = self.bridge.backends[ble_bridge.KIND_BLE] = self.backend
         self.backend.on_data = self.bridge.on_device_data
         self.bridge.handle({"cmd": "connect", "address": "A1"})
         self.settle()

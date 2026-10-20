@@ -1,5 +1,5 @@
 #!/bin/sh
-# BLE ブリッジ用の Python 仮想環境（tools/ble_bridge/.venv）を作り、bleak を入れる。
+# BLE ブリッジ用の Python 仮想環境（tools/ble_bridge/.venv）を作り、bleak と pyserial を入れる。
 # macOS / Linux 用。Windows は setup.bat を使う。
 #
 #   sh tools/ble_bridge/setup.sh
