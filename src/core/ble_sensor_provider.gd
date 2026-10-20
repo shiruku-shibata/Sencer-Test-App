@@ -13,6 +13,10 @@ extends SensorProvider
 ##   2. 応答が無ければ Python を探してブリッジを自動起動する（--parent-pid 付き）
 ##   3. hello が返れば準備完了。以後は ping で生存確認し、落ちたら自動で再起動する
 ##
+## ブリッジは USB シリアルの受信（kind="serial"）もできる。有線をブリッジ経由で使う
+## BridgeSerialSensorProvider は、ブリッジの起動・UDP を持つこのクラスに attach_channel() で相乗りする
+## （UDP ポートとブリッジのプロセスは1つだけにしたいため）。
+##
 ## Python やブリッジが無い・ポートが使えない等の場合も、例外は出さずに
 ## status_text() / unavailable_reason() で理由と対処を返す（他の接続方式は普通に使える）。
 ## プロトコルの詳細は tools/ble_bridge/README.md を参照。
@@ -27,6 +31,7 @@ const ENV_BRIDGE := "SENSOR_BLE_BRIDGE"    ## ble_bridge.py の場所を指定�
 const ENV_MOCK := "SENSOR_BLE_MOCK"        ## "1" ならブリッジを --mock で起動する
 const CMDLINE_MOCK := "--ble-mock"         ## godot ... -- --ble-mock でも同じ
 const BRIDGE_DIR_RES := "res://tools/ble_bridge"
+const KIND_BLE := "ble"
 const BRIDGE_FILE := "ble_bridge.py"
 
 const PROBE_SEC := 0.8               ## 手動起動のブリッジを探す時間
@@ -150,6 +155,7 @@ var _device_info: Dictionary = {}             ## address -> 直近の情報行�
 var _device_replies: Dictionary = {}          ## address -> 直近のその他の '#' 行（# ok= / # error= / # event=）
 var _clocks: Dictionary = {}                  ## address -> SampleClock
 var _logs := PackedStringArray()
+var _channels: Dictionary = {}                ## kind -> WeakRef（ブリッジを共用する Provider）
 var _is_shut_down := false
 
 
@@ -392,6 +398,47 @@ func is_manual_mode() -> bool:
 	return _manual_only
 
 
+# --- ブリッジの共用（有線のブリッジ経由など） ---------------------------------------
+
+## ブリッジを共用する Provider を登録する。kind が一致するメッセージ（scanning/devices/status/data）と、
+## ブリッジ全体の出来事を受け取る。受け取り側は次のメソッドを持つこと:
+##   _on_bridge_hello(message: Dictionary) / _on_bridge_pong(message: Dictionary)
+##   _on_bridge_message(message: Dictionary) / _on_bridge_reset(notify: bool)
+## 循環参照にならないよう WeakRef で持つ。
+func attach_channel(kind: String, receiver: Object) -> void:
+	_channels[kind] = weakref(receiver)
+
+
+## ブリッジへコマンドを送る（共用する Provider 用）。準備ができていなければ false。
+func bridge_send(message: Dictionary) -> bool:
+	if _is_shut_down or _state != State.READY:
+		return false
+	_send(message)
+	return true
+
+
+## ブリッジが使えない理由（FAILED のとき）。使える・準備中なら空。
+func bridge_problem() -> String:
+	return _fail_reason if _state == State.FAILED else ""
+
+
+## ブリッジが使えないと確定しているか（Python が無い・ポート使用中など）。
+func is_bridge_failed() -> bool:
+	return _state == State.FAILED
+
+
+func _channel(kind: String) -> Object:
+	var ref: WeakRef = _channels.get(kind)
+	return ref.get_ref() if ref != null else null
+
+
+func _notify_channels(method: String, arg: Variant) -> void:
+	for kind in _channels.keys():
+		var receiver := _channel(kind)
+		if receiver != null:
+			receiver.call(method, arg)
+
+
 ## 何か問題が起きているか（利用不可・BLE のエラー・スキャン失敗）。画面の警告色に使う。
 func has_problem() -> bool:
 	return _state == State.FAILED or not _ble_error_code.is_empty() or not _scan_error.is_empty()
@@ -628,6 +675,7 @@ func _drop_all_connections(notify: bool) -> void:
 	if notify:
 		for address in lost:
 			connection_changed.emit(address, false)
+	_notify_channels("_on_bridge_reset", notify)
 
 
 ## ブリッジが落ちた・応答しなくなったとき。
@@ -729,11 +777,20 @@ func _receive() -> void:
 
 
 func _handle_message(message: Dictionary) -> void:
-	match str(message.get("type", "")):
+	var type := str(message.get("type", ""))
+	# BLE 以外（kind="serial" など）の個別メッセージは、登録された Provider へ渡す
+	var kind := str(message.get("kind", KIND_BLE))
+	if kind != KIND_BLE and type in ["scanning", "devices", "status", "data"]:
+		var receiver := _channel(kind)
+		if receiver != null:
+			receiver.call("_on_bridge_message", message)
+		return
+	match type:
 		"hello":
 			_on_hello(message)
 		"pong":
 			_sync_connected(message.get("connected", []))
+			_notify_channels("_on_bridge_pong", message)
 		"scanning":
 			_scanning = true
 			provider_status_changed.emit()
@@ -774,6 +831,7 @@ func _on_hello(message: Dictionary) -> void:
 	_sync_connected(message.get("connected", []))
 	if _scan_requested:
 		_send_scan()
+	_notify_channels("_on_bridge_hello", message)
 	provider_status_changed.emit()
 
 

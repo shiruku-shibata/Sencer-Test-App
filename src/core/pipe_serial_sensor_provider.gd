@@ -32,6 +32,11 @@ func get_mode() -> SensorDevice.Mode:
 
 
 func is_available() -> bool:
+	return is_supported_os()
+
+
+## この OS で stty / cat による有線接続が使えるか（SensorManager が有線の方式を選ぶときにも使う）。
+static func is_supported_os() -> bool:
 	return SUPPORTED_OS.has(OS.get_name())
 
 
