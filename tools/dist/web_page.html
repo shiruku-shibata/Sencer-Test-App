@@ -1,0 +1,166 @@
+<title>センサーテストアプリ</title>
+<style>
+	/* 1画面のアプリ: Godot のキャンバスを画面いっぱいに置き、読み込み中だけ中央に案内を重ねる */
+	:root {
+		--bg: #eef1f2;
+		--panel: #ffffff;
+		--fg: #1d2a2e;
+		--muted: #5b6b70;
+		--accent: #2f8f86;
+		--error: #b4462b;
+		--font-body: "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif;
+		--font-data: ui-monospace, "SF Mono", Menlo, monospace;
+	}
+	@media (prefers-color-scheme: dark) {
+		:root:not([data-theme="light"]) {
+			--bg: #14191b; --panel: #1d2427; --fg: #e3eaec; --muted: #93a4a9; --accent: #3fb3aa; --error: #e8845f;
+			color-scheme: dark;
+		}
+	}
+	:root[data-theme="dark"] {
+		--bg: #14191b; --panel: #1d2427; --fg: #e3eaec; --muted: #93a4a9; --accent: #3fb3aa; --error: #e8845f;
+		color-scheme: dark;
+	}
+	html, body { height: 100%; overflow: hidden; }
+	body { background: var(--bg); color: var(--fg); font-family: var(--font-body); }
+	#canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; background: #14191b; outline: none; }
+	#canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+	#status {
+		position: fixed; inset: 0; display: grid; place-items: center;
+		padding-block: 24px;
+		padding-left: max(16px, env(safe-area-inset-left, 0px));
+		padding-right: max(16px, env(safe-area-inset-right, 0px));
+		background: var(--bg);
+	}
+	.card {
+		width: min(440px, 100%); display: grid; gap: 14px;
+		background: var(--panel); border-radius: 10px; padding: 24px 22px;
+		box-shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 8px 24px rgb(0 0 0 / 0.08);
+	}
+	.card h1 { margin: 0; font-size: 20px; font-weight: 700; text-wrap: balance; }
+	.badge {
+		justify-self: start; font-size: 12px; letter-spacing: 0.04em; color: var(--accent);
+		border: 1px solid currentColor; border-radius: 999px; padding: 2px 10px;
+	}
+	.card p { margin: 0; font-size: 14px; line-height: 1.7; color: var(--muted); }
+	#status-progress { width: 100%; height: 8px; accent-color: var(--accent); }
+	#status-bytes { font-family: var(--font-data); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+	#status-notice { font-size: 14px; line-height: 1.7; color: var(--error); white-space: pre-wrap; overflow-wrap: anywhere; }
+	@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<canvas id="canvas" tabindex="0">このブラウザではキャンバス（HTML5 canvas）を表示できません。</canvas>
+
+<div id="status">
+	<div class="card">
+		<span class="badge">ブラウザ版・お試し</span>
+		<h1>センサーテストアプリ</h1>
+		<p>M5 センサーのしきい値を測るツールです。ブラウザ版では USB・Bluetooth が使えないため、デモデバイス（demo-01 / demo-02）で操作を確認できます。</p>
+		<progress id="status-progress"></progress>
+		<div id="status-bytes">読み込み中…（初回は約 12 MB）</div>
+		<div id="status-notice" hidden></div>
+		<p>はじめかた: 「デバイス管理」で demo-01 の「接続」→「しきい値測定」で軸 gZ を選び、①静止測定 → ②試行（Space キー）を 5 回 → ③推奨値を適用 → ④判定テスト。</p>
+		<p>画面は PC 向けです。スマホでは横向きにすると見やすくなります。</p>
+	</div>
+</div>
+
+<script>
+// 置き場所の都合で、ファイルは名前を変えて置いている（中身はそのまま）。
+//   index.pck  → pck.wasm        アプリ本体
+//   index.wasm → engine.gz.wasm  エンジン本体（約 40 MB を gzip で約 10 MB に圧縮）
+// エンジンが元の名前で取りに来たら、置いてある名前で取得し、エンジン本体はブラウザ内で展開して渡す
+// （進捗表示が動くようストリームのまま）。サーバーが自動で展開して返した場合にも動くよう、
+// 先頭の gzip 署名（1f 8b）を見て判断する。
+(function () {
+	const originalFetch = window.fetch.bind(window);
+	window.fetch = function (input, init) {
+		const url = typeof input === 'string' ? input : (input && input.url) || '';
+		if (/(^|\/)index\.pck(\?.*)?$/.test(url)) {
+			return originalFetch(url.replace(/index\.pck/, 'pck.wasm'), init);
+		}
+		if (!/(^|\/)index\.wasm(\?.*)?$/.test(url)) {
+			return originalFetch(input, init);
+		}
+		return originalFetch(url.replace(/index\.wasm/, 'engine.gz.wasm'), init).then(async function (res) {
+			if (!res.ok) {
+				return res;
+			}
+			const reader = res.body.getReader();
+			const first = await reader.read();
+			const head = first.value || new Uint8Array(0);
+			const gzipped = head.length > 1 && head[0] === 0x1f && head[1] === 0x8b;
+			let stream = new ReadableStream({
+				start(controller) {
+					if (head.length) controller.enqueue(head);
+					if (first.done) controller.close();
+				},
+				async pull(controller) {
+					const chunk = await reader.read();
+					if (chunk.done) controller.close();
+					else controller.enqueue(chunk.value);
+				},
+			});
+			if (gzipped) {
+				stream = stream.pipeThrough(new DecompressionStream('gzip'));
+			}
+			return new Response(stream, { status: 200, headers: { 'Content-Type': 'application/wasm' } });
+		});
+	};
+})();
+</script>
+<script src="index.js"></script>
+<script>
+// Godot の書き出しが生成する起動処理を、このページ用に簡略化したもの。
+// 音声は使わないのでダミーの音声ドライバで起動する（AudioWorklet を読み込まない）。
+const GODOT_CONFIG = {
+	args: ['--audio-driver', 'Dummy'],
+	canvasResizePolicy: 2,
+	executable: 'index',
+	experimentalVK: false,
+	fileSizes: { 'index.pck': __PCK_SIZE__, 'index.wasm': __WASM_SIZE__ },
+	focusCanvas: true,
+	gdextensionLibs: [],
+};
+
+(function () {
+	const overlay = document.getElementById('status');
+	const progress = document.getElementById('status-progress');
+	const bytes = document.getElementById('status-bytes');
+	const notice = document.getElementById('status-notice');
+
+	function fail(err) {
+		console.error(err);
+		const message = err instanceof Error ? err.message : String(err || '不明なエラー');
+		notice.textContent = '起動できませんでした。\n' + message +
+			'\n最新の Chrome / Edge / Safari / Firefox で開き直してください。';
+		notice.hidden = false;
+		progress.hidden = true;
+		bytes.hidden = true;
+	}
+
+	if (!('DecompressionStream' in window)) {
+		fail(new Error('このブラウザは圧縮データの展開（DecompressionStream）に対応していません。'));
+		return;
+	}
+	const missing = Engine.getMissingFeatures({ threads: false });
+	if (missing.length !== 0) {
+		fail(new Error('必要な機能がありません: ' + missing.join(', ')));
+		return;
+	}
+
+	GODOT_CONFIG.canvas = document.getElementById('canvas');
+	const engine = new Engine(GODOT_CONFIG);
+	engine.startGame({
+		onProgress: function (current, total) {
+			if (current > 0 && total > 0) {
+				progress.value = current;
+				progress.max = total;
+				bytes.textContent = '読み込み中… ' + Math.round((current / total) * 100) + '%';
+			}
+		},
+	}).then(function () {
+		overlay.remove();
+		document.getElementById('canvas').focus();
+	}, fail);
+})();
+</script>

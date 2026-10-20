@@ -6,6 +6,7 @@ Git公開の可能性があるため、依存を追加した際は必ずこの�
 | 用途 | ソフトウェア | ライセンス | 状態 |
 |---|---|---|---|
 | ゲームエンジン | Godot Engine 4.4系 | MIT | 使用中 |
+| フォント（ブラウザ版のみ） | Noto Sans JP（Regular を日本語で使う文字に絞ったサブセット。`assets/fonts/`） | SIL OFL 1.1 | ブラウザ版に同梱（ライセンス全文は `assets/fonts/OFL.txt`）。デスクトップ版には含めない |
 | ファームウェア | M5Unified 0.2.26 | MIT | 使用中（firmware/、PlatformIOのlib_depsで取得） |
 | ファームウェア | M5GFX 0.2.33 | MIT | 使用中（M5Unified の依存、lib_depsで固定） |
 | ファームウェア（BLE） | NimBLE-Arduino 2.5.1 | Apache-2.0 | 使用中（lib_depsで取得） |

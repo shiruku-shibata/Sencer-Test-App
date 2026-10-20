@@ -51,6 +51,7 @@ const STATUS_NOT_RECORDING := "記録: 停止中"
 
 # ---------------------------------------------------------------- デバイス管理（S1）
 
+const DEV_WEB_NOTICE := "ブラウザ版はお試し用です。USB・Bluetooth は使えないので、デモデバイス（demo-01 / demo-02）で操作を確認できます。実機を使うときはデスクトップ版（macOS / Windows / Linux）を使ってください。"
 const DEV_SCANNING := "スキャン中…"
 const DEV_CONNECTING := "接続処理中…"
 const DEV_ERROR_SUFFIX := "（エラー）"

@@ -182,6 +182,8 @@ func _refresh() -> void:
 
 	# BLE 以外で使えない方式の注意書き（BLE は上の枠に出す）
 	var notices := PackedStringArray()
+	if OS.has_feature("web"):
+		notices.append(UIStrings.DEV_WEB_NOTICE)
 	for provider in _manager.providers:
 		if provider.get_mode() != SensorDevice.Mode.BLE and not provider.is_available():
 			notices.append(provider.unavailable_reason())
