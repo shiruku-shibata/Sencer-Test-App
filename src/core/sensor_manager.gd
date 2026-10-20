@@ -27,6 +27,13 @@ var _is_shut_down := false
 
 
 func _ready() -> void:
+	registry.devices_changed.connect(func() -> void: devices_changed.emit())
+	# ブラウザ版: 外部プロセス（BLEブリッジ・stty/cat）も UDP も使えないので、デモデバイスだけで動かす
+	if OS.has_feature("web"):
+		_add_provider(MockSensorProvider.new())
+		scan_all()
+		return
+
 	# BLE: 別プロセスのブリッジ（tools/ble_bridge）経由。Python が無くてもアプリは動く
 	var ble := BleSensorProvider.new()
 
@@ -49,7 +56,6 @@ func _ready() -> void:
 
 	_add_provider(ble)
 	_add_provider(MockSensorProvider.new())
-	registry.devices_changed.connect(func() -> void: devices_changed.emit())
 	scan_all()
 
 
