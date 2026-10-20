@@ -1,0 +1,36 @@
+// 生成した C# 判定コードに入力列を流し、1行ごとに 0/1 を出力する（run.sh がこのファイルから Runner.cs を作る）。
+//   使い方: Runner <シナリオ名> <input.txt>
+// 各シナリオのクラスは run.sh で MotionDetector_<シナリオ名> に名前を変えてある。
+using System;
+using System.Globalization;
+using System.IO;
+
+public static class SnippetRunner
+{
+    public static int Main(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("usage: Runner <case> <input.txt>");
+            return 2;
+        }
+        Func<float, float, float, float, float, float, long, bool> feed;
+        switch (args[0])
+        {
+// @CASES@
+            default:
+                Console.Error.WriteLine("unknown case: " + args[0]);
+                return 2;
+        }
+        foreach (string line in File.ReadLines(args[1]))
+        {
+            string[] p = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (p.Length < 7) continue;
+            float[] v = new float[6];
+            for (int i = 0; i < 6; i++) v[i] = float.Parse(p[i], CultureInfo.InvariantCulture);
+            long t = long.Parse(p[6], CultureInfo.InvariantCulture);
+            Console.WriteLine(feed(v[0], v[1], v[2], v[3], v[4], v[5], t) ? "1" : "0");
+        }
+        return 0;
+    }
+}
