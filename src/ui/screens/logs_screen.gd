@@ -30,7 +30,7 @@ func _build() -> void:
 	toolbar.add_child(open_button)
 
 	var path_label := Label.new()
-	path_label.text = "保存先: %s" % LoggingService.LOG_DIR
+	path_label.text = UIStrings.LOGS_SAVE_DIR % LoggingService.LOG_DIR
 	path_label.modulate = Color(1, 1, 1, 0.6)
 	toolbar.add_child(path_label)
 	add_child(toolbar)
@@ -52,7 +52,7 @@ func refresh() -> void:
 	for child in _grid.get_children():
 		child.queue_free()
 
-	for header in ["ファイル名", "サイズ", UIStrings.LABEL_ACTION]:
+	for header in [UIStrings.LOGS_COL_FILE, UIStrings.LOGS_COL_SIZE, UIStrings.LABEL_ACTION]:
 		var label := Label.new()
 		label.text = header
 		label.modulate = Color(1, 1, 1, 0.6)
@@ -61,7 +61,7 @@ func refresh() -> void:
 	var logs := _logger.list_logs()
 	if logs.is_empty():
 		var empty := Label.new()
-		empty.text = "記録されたログはまだありません。"
+		empty.text = UIStrings.LOGS_EMPTY
 		empty.modulate = Color(1, 1, 1, 0.6)
 		_grid.add_child(empty)
 		_grid.add_child(Label.new())

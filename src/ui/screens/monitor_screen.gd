@@ -23,6 +23,7 @@ var _record_button: Button
 var _pause_button: Button
 var _axis_selector: AxisSelector
 var _record_target: Label
+var _record_notice: Label
 var _accel_block: VBoxContainer
 var _accel_legend: HBoxContainer
 var _accel_view: WaveformView
@@ -40,6 +41,7 @@ var _smoothing := true
 var _selected_id := ""
 var _axes: Array[int] = []                     ## 表示・記録する軸
 var _recording_axes: Array[int] = []           ## 記録中の軸（記録開始時に確定）
+var _recording_device_id := ""                 ## 記録中のデバイス
 var _rings: Dictionary = {}                    ## axis -> SampleRing（全8軸の生値を保持）
 
 
@@ -50,7 +52,7 @@ func setup(manager: SensorManager, logger: LoggingService) -> void:
 		_rings[axis] = SampleRing.new(RING_CAPACITY)
 	_build()
 	_manager.reading_received.connect(_on_reading_received)
-	_manager.devices_changed.connect(_refresh_device_list)
+	_manager.devices_changed.connect(_on_devices_changed)
 	_logger.recording_stopped.connect(_on_recording_stopped)
 	_apply_axes(_axis_selector.get_axes())
 	_refresh_device_list()
@@ -157,6 +159,11 @@ func _build_axis_bar() -> HBoxContainer:
 	_record_target.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_record_target.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	bar.add_child(_record_target)
+
+	_record_notice = Label.new()
+	_record_notice.modulate = Color(1.0, 0.75, 0.55)
+	_record_notice.visible = false
+	bar.add_child(_record_notice)
 	return bar
 
 
@@ -387,6 +394,18 @@ func _update_readouts(windows: Dictionary) -> void:
 
 # ---------------------------------------------------------------- デバイス選択・記録
 
+## 記録中のデバイスが切断されたら記録を止めて知らせ、そのあと一覧を作り直す。
+func _on_devices_changed() -> void:
+	if _logger.is_recording() and not _recording_device_id.is_empty():
+		var device := _manager.registry.get_device(_recording_device_id)
+		if device == null or not device.connected:
+			var lost_name := device.display_name() if device != null else _recording_device_id
+			var info := _logger.stop()   # recording_stopped で表示を戻す
+			_record_notice.text = UIStrings.MONITOR_RECORD_LOST % [lost_name, int(info.get("rows", 0))]
+			_record_notice.visible = true
+	_refresh_device_list()
+
+
 func _refresh_device_list() -> void:
 	if _device_selector == null:
 		return
@@ -428,16 +447,24 @@ func _on_record_pressed() -> void:
 	if device == null:
 		return
 	if _logger.start(device, _axes):
-		_recording_axes = _axes.duplicate()
+		_recording_axes = _logger.current_axes()   # LoggingService が整えた実際の列
+		_recording_device_id = device.id
 		_record_button.text = UIStrings.BTN_RECORD_STOP
+		# 記録中は軸もデバイスも変えられない（表示と CSV の対象がずれないように）
 		_axis_selector.set_editable(false, UIStrings.AXIS_LOCKED_RECORDING)
+		_device_selector.disabled = true
+		_device_selector.tooltip_text = UIStrings.MONITOR_DEVICE_LOCKED
+		_record_notice.visible = false
 		_update_record_status()
 
 
 func _on_recording_stopped(_info: Dictionary) -> void:
 	_record_button.text = UIStrings.BTN_RECORD_START
 	_axis_selector.set_editable(true)
+	_device_selector.disabled = false
+	_device_selector.tooltip_text = ""
 	_recording_axes.clear()
+	_recording_device_id = ""
 	_update_record_status()
 
 

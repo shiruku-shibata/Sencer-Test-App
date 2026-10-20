@@ -6,7 +6,13 @@ extends VBoxContainer
 ## 画面構成:
 ##   上部 … 対象デバイス・平滑化・軸選択（AxisSelector）
 ##   左   … 選択軸ごとの波形（しきい値線ドラッグ・判定マーカー・ノイズ帯）
-##   右   … ①静止測定 ②動作測定 ③推奨しきい値 ④判定テスト ⑤保存と共有（スクロール）
+##   右   … ①静止測定 ②動作測定 ③推奨しきい値 ④判定テスト ⑤保存と共有 ⑥ログで判定テスト（スクロール）
+##
+## 表示モード:
+##   ライブ … 受信中のデータを直近 WINDOW_SEC 秒ぶん流す（通常）
+##   ログ   … ⑥で選んだ CSV（LogReplay）の全体を描き、別の ThresholdDetector に流した判定位置を打つ。
+##            しきい値を動かすたびに判定し直すので、実機なしでしきい値を詰められる。
+##            波形を横にドラッグして範囲を選び、静止測定・試行として ThresholdAnalyzer に取り込める。
 ##
 ## 役割分担:
 ##   - 測定・推奨値の計算は ThresholdAnalyzer、判定は ThresholdDetector に任せる（画面側で独自判定しない）。
@@ -28,6 +34,9 @@ const RIGHT_PANEL_WIDTH := 440
 const PLOT_MIN_HEIGHT := 90
 const PANEL_FONT_SIZE := 14
 const LAMP_HOLD_MS := 250
+const LOG_DETECT_INTERVAL_MS := 80             ## ログ判定のやり直しの最短間隔（ドラッグ中に毎フレーム走らせない）
+const LOG_MAX_LISTED_FIRES := 20               ## ⑥に並べる判定位置の最大数
+const LOG_BASELINE_FOREVER_MS := 1 << 30       ## 取り込み時の静止測定は stop() で締めるので、時間では終わらせない
 
 const COLOR_THRESHOLD := Color("ff6b6b")
 const COLOR_THRESHOLD_OFF := Color(1.0, 0.42, 0.42, 0.35)
@@ -53,6 +62,7 @@ var _filter := AxisFilter.new(1)               ## 波形表示用（Analyzer/Det
 
 # ---- 状態
 var _selected_id := ""
+var _lost_device_id := ""                      ## 測定中・測定済みのまま切断されたデバイス（戻ってきたら選び直す）
 var _axes: Array[int] = []
 var _smoothing: int = 1
 var _smoothing_values: Array[int] = []         ## 平滑化セレクタの各項目の値
@@ -65,11 +75,24 @@ var _rings: Dictionary = {}                    ## axis -> SampleRing（平滑化
 var _sample_total := 0                         ## デバイス選択後に受け取ったサンプル数（マーカー位置の基準）
 var _markers: Array[int] = []                  ## 判定したサンプル番号
 var _spans: Array = []                         ## [{start, end(-1=継続中), color}] 静止測定・試行の区間
-var _profile_bands: Dictionary = {}            ## axis -> {min, max}（読み込んだプロファイルの静止測定）
 var _last_fire_tick := -100000
 var _lamp_lit := false
 var _confirm_ok := Callable()
 var _confirm_cancel := Callable()
+
+# ---- ⑥ ログで判定テスト
+var _logger: LoggingService
+var _log_detector := ThresholdDetector.new()   ## ログ専用（ライブの判定状態・回数を乱さない）
+var _log_mode := false
+var _log_path := ""
+var _log_readings: Array[SensorReading] = []
+var _log_columns: Array[int] = []              ## CSV にある軸（LogReplay.axes_in）
+var _log_markers: Array[int] = []              ## 判定したサンプル番号
+var _log_selection := Vector2(-1.0, -1.0)      ## 選択範囲（比率）。x < 0 なら選択なし（= ログ全体）
+var _log_series_dirty := false
+var _log_detect_dirty := false
+var _log_last_detect_tick := 0
+var _importing := false                        ## ログ取り込み中（区間の塗りを作らない）
 
 # ---- UI（全体）
 var _device_selector: OptionButton
@@ -112,10 +135,22 @@ var _profile_name: LineEdit
 var _profile_note: LineEdit
 var _profile_list: OptionButton
 var _code_lang: OptionButton
+var _log_banner: PanelContainer
+var _log_banner_label: Label
+var _log_list: OptionButton
+var _log_open_button: Button
+var _log_info: Label
+var _log_warning: Label
+var _log_count: Label
+var _log_times: Label
+var _log_import_baseline: Button
+var _log_import_trial: Button
 
 
-func setup(manager: SensorManager) -> void:
+## logger は ⑥ のログ一覧に使う（省略時は ⑥ の一覧が空になる）。
+func setup(manager: SensorManager, logger: LoggingService = null) -> void:
 	_manager = manager
+	_logger = logger
 	_smoothing_values = SMOOTHING_OPTIONS.duplicate()
 	_build()
 
@@ -124,11 +159,16 @@ func setup(manager: SensorManager) -> void:
 	_analyzer.phase_changed.connect(_on_phase_changed)
 	_analyzer.baseline_finished.connect(_on_baseline_finished)
 	_analyzer.trial_finished.connect(_on_trial_finished)
+	_analyzer.trial_discarded.connect(func() -> void: _show_message(UIStrings.TH_MSG_TRIAL_DISCARDED))
 	_detector.fired.connect(_on_detector_fired)
+
+	if _logger != null:
+		_logger.recording_stopped.connect(func(_info: Dictionary) -> void: _refresh_log_list())
 
 	_apply_axes(_axis_selector.get_axes())
 	_refresh_device_list()
 	_refresh_profile_list()
+	_refresh_log_list()
 
 
 ## ステータスバー用の短い表示（判定回数）。デバイス未選択なら空文字。
@@ -148,6 +188,8 @@ func _build() -> void:
 	_hint.text = UIStrings.HINT_NO_DEVICE
 	_hint.modulate = Color(1.0, 0.75, 0.55)
 	add_child(_hint)
+
+	add_child(_build_log_banner())
 
 	var body := HBoxContainer.new()
 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -222,6 +264,29 @@ func _build_top_bar() -> VBoxContainer:
 	return top
 
 
+## ログ表示中だけ出す帯（何を表示しているか・ライブに戻るボタン）。
+func _build_log_banner() -> PanelContainer:
+	_log_banner = PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.55, 0.85, 1.0, 0.12)
+	style.set_corner_radius_all(4)
+	style.content_margin_left = 10
+	style.content_margin_right = 6
+	style.content_margin_top = 4
+	style.content_margin_bottom = 4
+	_log_banner.add_theme_stylebox_override("panel", style)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	_log_banner_label = Label.new()
+	_log_banner_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_log_banner_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	row.add_child(_log_banner_label)
+	row.add_child(_make_button(UIStrings.TH_LOG_BACK_TO_LIVE, func() -> void: _set_log_mode(false)))
+	_log_banner.add_child(row)
+	_log_banner.visible = false
+	return _log_banner
+
+
 func _build_side_panel() -> ScrollContainer:
 	var scroll := ScrollContainer.new()
 	scroll.custom_minimum_size.x = RIGHT_PANEL_WIDTH
@@ -238,6 +303,7 @@ func _build_side_panel() -> ScrollContainer:
 	steps.add_child(_build_step3())
 	steps.add_child(_build_step4())
 	steps.add_child(_build_step5())
+	steps.add_child(_build_step6())
 	scroll.add_child(steps)
 	return scroll
 
@@ -397,7 +463,12 @@ func _build_step4() -> PanelContainer:
 	_combine_selector.select(_combine_selector.get_item_index(_combine))
 	_combine_selector.item_selected.connect(func(index: int) -> void:
 		_combine = _combine_selector.get_item_id(index)
-		_detector.combine = _combine   # configure() は判定回数もリセットするので、ここでは値だけ変える
+		# 判定条件そのものが変わるので、ラッチ状態を持ち越さない（ALL→ANY で偽の立ち上がりが出るのを防ぐ）。
+		# ルールは差し替えないので configure() ではなく reset()。判定回数とマーカーも 0 からにする。
+		_detector.combine = _combine
+		_detector.reset()
+		_markers.clear()
+		_log_detect_dirty = _log_mode
 	)
 	combine_row.add_child(_combine_selector)
 	box.add_child(combine_row)
@@ -496,6 +567,50 @@ func _build_step5() -> PanelContainer:
 	return step[0]
 
 
+func _build_step6() -> PanelContainer:
+	var step := _make_step(UIStrings.TH_STEP6_TITLE, UIStrings.TH_STEP6_DESC)
+	var box: VBoxContainer = step[1]
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	_log_list = OptionButton.new()
+	_log_list.focus_mode = Control.FOCUS_NONE
+	_log_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_log_list.clip_text = true
+	_log_list.custom_minimum_size.x = 120
+	row.add_child(_log_list)
+	_log_open_button = _make_button(UIStrings.TH_LOG_OPEN, _on_log_open_pressed)
+	row.add_child(_log_open_button)
+	var refresh := _make_button("↻", _refresh_log_list)
+	refresh.tooltip_text = UIStrings.BTN_REFRESH
+	row.add_child(refresh)
+	box.add_child(row)
+
+	_log_info = _make_note("")
+	box.add_child(_log_info)
+	_log_warning = _make_note("")
+	_log_warning.modulate = Color(1.0, 0.75, 0.55)
+	box.add_child(_log_warning)
+
+	_log_count = _make_label("")
+	_log_count.add_theme_font_size_override("font_size", PANEL_FONT_SIZE + 4)
+	box.add_child(_log_count)
+	_log_times = _make_note("")
+	box.add_child(_log_times)
+
+	box.add_child(HSeparator.new())
+	box.add_child(_make_note(UIStrings.TH_LOG_IMPORT_HINT))
+	var import_row := HBoxContainer.new()
+	import_row.add_theme_constant_override("separation", 8)
+	_log_import_baseline = _make_button(UIStrings.TH_LOG_IMPORT_BASELINE, func() -> void: _import_log(true))
+	import_row.add_child(_log_import_baseline)
+	_log_import_trial = _make_button(UIStrings.TH_LOG_IMPORT_TRIAL, func() -> void: _import_log(false))
+	import_row.add_child(_log_import_trial)
+	box.add_child(import_row)
+	_refresh_log_panel()
+	return step[0]
+
+
 # ---------------------------------------------------------------- 軸ごとのUI（軸が変わるたびに作り直す）
 
 func _rebuild_axis_ui() -> void:
@@ -541,12 +656,20 @@ func _rebuild_plots() -> void:
 		view.min_auto_range = SensorAxis.default_range(axis) * 0.2
 		view.unit_text = SensorAxis.unit(axis)
 		view.line_dragged.connect(_on_line_dragged)
+		view.selection_changed.connect(_on_log_selection_changed)
+		view.selectable = _log_mode
+		if _log_mode:
+			view.capacity = 0
+			view.set_selection(_log_selection.x, _log_selection.y)
 		block.add_child(view)
 
 		_plots_box.add_child(block)
 		_plot_views[axis] = view
 		_plot_values[axis] = value
 		_plot_states[axis] = state
+	if _log_mode:
+		_log_series_dirty = true
+		_log_detect_dirty = true
 	_update_all_lines()
 
 
@@ -699,8 +822,13 @@ func _sync_rule_controls(axis: int) -> void:
 	row["enabled"].set_pressed_no_signal(rule.enabled)
 	var direction: OptionButton = row["direction"]
 	direction.select(direction.get_item_index(rule.direction))
-	_apply_threshold_limits(row["threshold"], rule.direction)
-	row["threshold"].set_value_no_signal(rule.threshold)
+	# 下限を変えると SpinBox が古い値を丸めて value_changed を出し、ルールを書き戻してしまう。
+	# 先に新しい値を入れてから下限を変える（新しい値は新しい範囲に収まっているので丸められない）。
+	var threshold: SpinBox = row["threshold"]
+	threshold.min_value = -threshold.max_value
+	threshold.set_value_no_signal(rule.threshold)
+	_apply_threshold_limits(threshold, rule.direction)
+	threshold.set_value_no_signal(rule.threshold)
 	row["hysteresis"].set_value_no_signal(rule.hysteresis)
 	row["refractory"].set_value_no_signal(rule.refractory_ms)
 
@@ -824,8 +952,7 @@ func _on_axes_requested(axes: Array) -> void:
 
 ## 軸を確定する。測定結果・表示バッファ・判定状態はすべて作り直す。
 func _apply_axes(axes: Array) -> void:
-	if _analyzer.phase() != ThresholdAnalyzer.Phase.IDLE:
-		_analyzer.stop()
+	_cancel_phase()
 	_axes.clear()
 	for axis in axes:
 		_axes.append(int(axis))
@@ -836,7 +963,6 @@ func _apply_axes(axes: Array) -> void:
 		if not _directions.has(axis):
 			_directions[axis] = _default_direction(axis)
 	_rules = kept_rules
-	_profile_bands.clear()
 
 	_analyzer.smoothing_window = _smoothing
 	_analyzer.set_axes(_axes)
@@ -864,14 +990,15 @@ func _set_smoothing(value: int) -> void:
 		_smoothing_selector.add_item(_smoothing_text(value))
 	_smoothing_selector.select(_smoothing_values.find(value))
 	_smoothing = value
-	if _analyzer.phase() != ThresholdAnalyzer.Phase.IDLE:
-		_analyzer.stop()
+	_cancel_phase()
 	_analyzer.smoothing_window = value
 	_analyzer.clear_all()
-	_profile_bands.clear()
 	_reset_stream()
 	_configure_detector()
 	_refresh_measurement()
+	if _log_mode:
+		_log_series_dirty = true
+		_log_detect_dirty = true
 
 
 ## 表示バッファ・マーカー・判定状態を空にする（測定結果は残す）。
@@ -886,27 +1013,46 @@ func _reset_stream() -> void:
 	_detector.reset()
 
 
+## 接続中デバイスの一覧を作り直す。
+## 選んでいたデバイスが切断されたとき:
+##   - 測定中・測定済みなら、別のデバイスへは自動で切り替えない（2台の測定結果が混ざるのを防ぐ）。
+##     進行中の測定は中止し、案内を出して、同じデバイスが戻ってきたら自動で選び直す。
+##   - 何も測っていなければ、残っているデバイスを自動で選ぶ。
 func _refresh_device_list() -> void:
 	if _device_selector == null:
 		return
-	var previous := _selected_id
+	var preferred := _selected_id if not _selected_id.is_empty() else _lost_device_id
 	_device_selector.clear()
 	var connected := _manager.registry.connected_devices()
+	var index := -1
 	for device in connected:
 		_device_selector.add_item(device.display_name())
 		_device_selector.set_item_metadata(_device_selector.item_count - 1, device.id)
+		if device.id == preferred:
+			index = _device_selector.item_count - 1
 
-	_hint.visible = connected.is_empty()
+	if index >= 0:
+		_device_selector.select(index)
+		_lost_device_id = ""
+		_set_device(preferred)
+		return
+	if not preferred.is_empty() and _has_measurement():
+		_device_selector.select(-1)
+		var lost_name := preferred
+		var device := _manager.registry.get_device(preferred)
+		if device != null:
+			lost_name = device.display_name()
+		if not _selected_id.is_empty():
+			_show_message(UIStrings.TH_MSG_DEVICE_LOST % lost_name)
+		_lost_device_id = preferred
+		_set_device("")
+		return
+	_lost_device_id = ""
 	if connected.is_empty():
 		_set_device("")
 		return
-	var index := 0
-	for i in connected.size():
-		if connected[i].id == previous:
-			index = i
-	_device_selector.select(index)
-	# 自動で選び直すときは測定結果を残す（一時的な切断で結果が消えないように）
-	_set_device(str(_device_selector.get_item_metadata(index)))
+	_device_selector.select(0)
+	_set_device(str(_device_selector.get_item_metadata(0)))
 
 
 func _on_device_selected(index: int) -> void:
@@ -914,11 +1060,9 @@ func _on_device_selected(index: int) -> void:
 	if new_id == _selected_id:
 		return
 	var change := func() -> void:
+		_lost_device_id = ""
 		_set_device(new_id)
-		if _analyzer.phase() != ThresholdAnalyzer.Phase.IDLE:
-			_analyzer.stop()
 		_analyzer.clear_all()
-		_profile_bands.clear()
 		_refresh_measurement()
 	if _has_measurement():
 		_ask(UIStrings.TH_CONFIRM_DEVICE, change, func() -> void:
@@ -935,9 +1079,9 @@ func _set_device(device_id: String) -> void:
 		_update_controls()
 		return
 	_selected_id = device_id
-	# デバイスが切り替わったら（切断を含む）、進行中の測定はそこまでの値で締める
-	if _analyzer.phase() != ThresholdAnalyzer.Phase.IDLE:
-		_analyzer.stop()
+	# デバイスが切り替わったら（切断を含む）、進行中の測定は結果を残さずに中止する
+	# （途中までの値で確定すると、短い静止測定や振り切る前の試行が推奨値を狂わせるため）
+	_cancel_phase()
 	_reset_stream()
 	_update_controls()
 
@@ -962,6 +1106,9 @@ func _on_detector_fired(_timestamp_ms: int, _values: Dictionary) -> void:
 
 
 func _on_phase_changed(phase: int) -> void:
+	if _importing:
+		_update_controls()
+		return
 	match phase:
 		ThresholdAnalyzer.Phase.BASELINE:
 			_spans.append({"start": _sample_total, "end": -1, "color": COLOR_BASELINE_SPAN})
@@ -975,7 +1122,6 @@ func _on_phase_changed(phase: int) -> void:
 
 func _on_baseline_finished(_stats: Dictionary) -> void:
 	_baseline_progress.value = 100.0
-	_profile_bands.clear()
 	_refresh_measurement()
 
 
@@ -986,6 +1132,25 @@ func _on_trial_finished(_index: int, _result: Dictionary) -> void:
 func _process(_delta: float) -> void:
 	if not is_visible_in_tree():
 		return
+	if _log_mode:
+		_update_log_views()
+	else:
+		_update_live_views()
+
+	for axis in _axes:
+		var row: Dictionary = _rule_rows.get(axis, {})
+		if not row.is_empty():
+			row["lamp"].modulate.a = 1.0 if _detector.axis_active(axis) else 0.15
+
+	if _analyzer.phase() == ThresholdAnalyzer.Phase.BASELINE:
+		_baseline_progress.value = _analyzer.progress() * 100.0
+
+	_set_lamp(_detector.is_active() or Time.get_ticks_msec() - _last_fire_tick < LAMP_HOLD_MS)
+	_count_label.text = UIStrings.TH_TRIGGER_COUNT % _detector.trigger_count
+
+
+## ライブ表示: 直近 WINDOW_SEC 秒の波形・判定マーカー・測定区間。
+func _update_live_views() -> void:
 	var visible_count := _visible_count()
 	var start_index := _sample_total - visible_count
 	var denom := float(maxi(visible_count - 1, 1))
@@ -1014,17 +1179,7 @@ func _process(_delta: float) -> void:
 		view.set_spans(spans)
 		view.set_series([{"color": SensorAxis.color(axis), "data": ring.latest(visible_count), "width": 1.6}])
 		_plot_values[axis].text = _fmt(axis, ring.last(), true) if not ring.is_empty() else "-"
-		var active := _detector.axis_active(axis)
-		_plot_states[axis].modulate.a = 1.0 if active else 0.0
-		var row: Dictionary = _rule_rows.get(axis, {})
-		if not row.is_empty():
-			row["lamp"].modulate.a = 1.0 if active else 0.15
-
-	if _analyzer.phase() == ThresholdAnalyzer.Phase.BASELINE:
-		_baseline_progress.value = _analyzer.progress() * 100.0
-
-	_set_lamp(_detector.is_active() or Time.get_ticks_msec() - _last_fire_tick < LAMP_HOLD_MS)
-	_count_label.text = UIStrings.TH_TRIGGER_COUNT % _detector.trigger_count
+		_plot_states[axis].modulate.a = 1.0 if _detector.axis_active(axis) else 0.0
 
 
 ## 判定ランプの点灯/消灯（変化したときだけスタイルを触る）。
@@ -1077,6 +1232,12 @@ func _input(event: InputEvent) -> void:
 		return
 	_toggle_trial()
 	get_viewport().set_input_as_handled()
+
+
+## 進行中の静止測定・試行を、結果を確定せずに中止する（過去の結果は残る）。
+func _cancel_phase() -> void:
+	if _analyzer.phase() != ThresholdAnalyzer.Phase.IDLE:
+		_analyzer.cancel()
 
 
 func _has_measurement() -> bool:
@@ -1189,7 +1350,7 @@ func _refresh_noise_bands() -> void:
 		var view: WaveformView = _plot_views.get(axis)
 		if view == null:
 			continue
-		var band: Dictionary = stats.get(axis, _profile_bands.get(axis, {}))
+		var band: Dictionary = stats.get(axis, {})
 		if band.has("min") and band.has("max"):
 			view.set_noise_band(float(band["min"]), float(band["max"]))
 		else:
@@ -1211,11 +1372,11 @@ func _refresh_recommendations() -> void:
 
 		var rec := _analyzer.recommend(axis, direction, _ratio)
 		var quality := str(rec.get("quality", "insufficient"))
-		var ready := quality != "insufficient"
-		any_ready = any_ready or ready
-		row["noise"].text = _fmt(axis, float(rec.get("noise_level", 0.0))) if ready else "-"
-		row["weakest"].text = _fmt(axis, float(rec.get("weakest_peak", 0.0))) if ready else "-"
-		row["recommended"].text = _fmt(axis, float(rec.get("threshold", 0.0)), true) if ready else "-"
+		var has_result := quality != "insufficient"
+		any_ready = any_ready or has_result
+		row["noise"].text = _fmt(axis, float(rec.get("noise_level", 0.0))) if has_result else "-"
+		row["weakest"].text = _fmt(axis, float(rec.get("weakest_peak", 0.0))) if has_result else "-"
+		row["recommended"].text = _fmt(axis, float(rec.get("threshold", 0.0)), true) if has_result else "-"
 		var quality_label: Label = row["quality"]
 		quality_label.text = str(UIStrings.QUALITY_LABELS.get(quality, quality))
 		quality_label.add_theme_color_override("font_color", QUALITY_COLORS.get(quality, Color.WHITE))
@@ -1254,16 +1415,32 @@ func _set_rule_direction(axis: int, direction: int) -> void:
 	var rule: ThresholdRule = _rules[axis]
 	if rule.direction == direction:
 		return
-	# 向きに合わせてしきい値の符号をそろえる（＋方向は正、−方向は負、絶対値は大きさ）
-	var magnitude := absf(rule.threshold)
-	match direction:
-		ThresholdRule.Direction.NEGATIVE:
-			rule.threshold = -magnitude
-		_:
-			rule.threshold = magnitude
+	rule.threshold = _threshold_for_direction(axis, rule, direction)
 	rule.direction = direction
 	_sync_rule_controls(axis)
 	_update_lines(axis)
+
+
+## 向きを手で切り替えたときの新しいしきい値。
+##   1. ③の推奨値（その向き）が使える品質（良好・ぎりぎり）ならそれを使う。
+##      「重なり」の推奨値は静止中の揺れの中にあり、常に判定されてしまうので使わない。
+##   2. 絶対値へ → 大きさ。絶対値から → ＋方向は +|t|、−方向は −|t|。
+##   3. ＋方向 ⇔ −方向 → 静止中の平均を中心に折り返す。重力で静止 +1G の軸
+##      （例: aZ の「0.51 を下回ったら落下」）でも、正しい側（平均より下）に来る。静止測定が無ければ 0 を中心にする。
+func _threshold_for_direction(axis: int, rule: ThresholdRule, direction: int) -> float:
+	var rec := _analyzer.recommend(axis, direction, _ratio)
+	if str(rec.get("quality", "")) in ["good", "tight"]:
+		return float(rec.get("threshold", rule.threshold))
+	var t := rule.threshold
+	if direction == ThresholdRule.Direction.ABSOLUTE:
+		return absf(t)
+	if rule.direction == ThresholdRule.Direction.ABSOLUTE:
+		return absf(t) if direction == ThresholdRule.Direction.POSITIVE else -absf(t)
+	var center := 0.0
+	var stats: Dictionary = _analyzer.baseline().get(axis, {})
+	if stats.has("mean"):
+		center = float(stats["mean"])
+	return 2.0 * center - t
 
 
 func _on_line_dragged(id: Variant, value: float) -> void:
@@ -1297,6 +1474,8 @@ func _update_all_lines() -> void:
 
 ## 波形に引く線: しきい値（ドラッグ可）・解除ライン（ヒステリシス）・③の推奨値（黄の破線）。
 func _update_lines(axis: int) -> void:
+	if _log_mode:
+		_log_detect_dirty = true   # しきい値が変わった → 次のフレームでログを判定し直す
 	var view: WaveformView = _plot_views.get(axis)
 	var rule: ThresholdRule = _rules.get(axis)
 	if view == null or rule == null:
@@ -1309,13 +1488,8 @@ func _update_lines(axis: int) -> void:
 			"color": COLOR_THRESHOLD if rule.enabled else COLOR_THRESHOLD_OFF,
 			"dashed": not rule.enabled, "label": UIStrings.TH_LINE_LABEL,
 		})
-	if rule.enabled and rule.hysteresis > 0.0:
-		for value in values:
-			var release := value
-			match rule.direction:
-				ThresholdRule.Direction.POSITIVE: release = value - rule.hysteresis
-				ThresholdRule.Direction.NEGATIVE: release = value + rule.hysteresis
-				_: release = value - signf(value) * rule.hysteresis
+	if rule.enabled:
+		for release in rule.release_line_values():
 			lines.append({"id": "release", "value": release, "color": COLOR_RELEASE, "dashed": true, "width": 1.0})
 
 	var direction := int(_directions.get(axis, _default_direction(axis)))
@@ -1369,10 +1543,7 @@ func _refresh_profile_list(select_path: String = "") -> void:
 	if previous.is_empty() and _profile_list.selected >= 0 and _profile_list.item_count > 0:
 		previous = str(_profile_list.get_item_metadata(_profile_list.selected))
 	_profile_list.clear()
-	var files := ThresholdProfile.list_files()
-	files.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		return int(a.get("modified", 0)) > int(b.get("modified", 0))
-	)
+	var files := ThresholdProfile.list_files()   # 新しい順に並べ済み
 	if files.is_empty():
 		_profile_list.add_item(UIStrings.TH_PROFILE_EMPTY)
 		_profile_list.set_item_metadata(0, "")
@@ -1400,17 +1571,15 @@ func _on_load_pressed() -> void:
 	if profile == null:
 		_show_message(UIStrings.TH_MSG_LOAD_FAILED)
 		return
-	var axes: Array[int] = []
-	for rule in profile.rules:
-		if rule.axis in SensorAxis.ALL and rule.axis not in axes:
-			axes.append(rule.axis)
-	axes = AxisSelector._sorted(axes)
+	var axes := profile.rule_axes()
 	if axes.is_empty():
 		_show_message(UIStrings.TH_MSG_LOAD_FAILED)
 		return
 	var needs_reset := axes != _axes or maxi(profile.smoothing_window, 1) != _smoothing
-	if needs_reset and _has_measurement():
-		_ask(UIStrings.TH_CONFIRM_LOAD, func() -> void: _apply_profile(profile, axes, true))
+	# プロファイルに測定結果があれば、今の測定結果はそれに置き換わる
+	var replaces_measurement := needs_reset or not profile.measurement_axes().is_empty()
+	if replaces_measurement and _has_measurement():
+		_ask(UIStrings.TH_CONFIRM_LOAD, func() -> void: _apply_profile(profile, axes, needs_reset))
 	else:
 		_apply_profile(profile, axes, needs_reset)
 
@@ -1422,27 +1591,33 @@ func _apply_profile(profile: ThresholdProfile, axes: Array[int], needs_reset: bo
 			_set_smoothing(smoothing)
 		_axis_selector.set_axes(axes)
 		_apply_axes(axes)
+	# 画面では1軸1ルールなので、同じ軸のルールが複数あれば最初の1つだけ使う
+	var used: Array[int] = []
+	var skipped := 0
 	for rule in profile.rules:
-		if rule.axis in _axes:
+		if rule.axis in _axes and rule.axis not in used:
 			_rules[rule.axis] = rule
+			used.append(rule.axis)
+		else:
+			skipped += 1
 	_combine = profile.combine
 	_combine_selector.select(_combine_selector.get_item_index(_combine))
 	_profile_name.text = profile.name
 	_profile_note.text = profile.note
 
-	# 現在の静止測定が無ければ、プロファイルに残っている静止測定をノイズ帯として表示する
-	_profile_bands.clear()
-	var baseline: Dictionary = profile.measurement.get("baseline", {}) if profile.measurement is Dictionary else {}
-	for axis_key in baseline.keys():
-		# ThresholdProfile はメモリ上では軸を int（SensorAxis.Id）で持つ。念のため文字列キーも受け付ける
-		var axis: int = int(axis_key) if typeof(axis_key) == TYPE_INT else SensorAxis.from_key(str(axis_key))
-		if axis >= 0 and baseline[axis_key] is Dictionary:
-			_profile_bands[axis] = baseline[axis_key]
+	# 保存されていた静止測定・試行を Analyzer に戻す（③の推奨値がそのまま出て、上書き保存しても消えない）。
+	# 軸・平滑化はここまでで profile に合わせてあるので、apply_measurement_to が平滑化を変えても同じ値。
+	if not profile.measurement_axes().is_empty():
+		_cancel_phase()
+		profile.apply_measurement_to(_analyzer)
 
 	_rebuild_rule_rows()
 	_refresh_measurement()
 	_configure_detector()
-	_show_message(UIStrings.TH_MSG_LOADED % profile.name)
+	var message := UIStrings.TH_MSG_LOADED % profile.name
+	if skipped > 0:
+		message += UIStrings.TH_MSG_RULES_SKIPPED % skipped
+	_show_message(message)
 
 
 func _on_delete_pressed() -> void:
@@ -1468,6 +1643,264 @@ func _on_copy_code_pressed() -> void:
 	_show_message(UIStrings.TH_MSG_CODE_COPIED % entry[0])
 
 
+# ================================================================ ⑥ ログで判定テスト
+
+func _refresh_log_list() -> void:
+	if _log_list == null:
+		return
+	var previous := _selected_log_path()
+	_log_list.clear()
+	var logs: Array = _logger.list_logs() if _logger != null else []
+	if logs.is_empty():
+		_log_list.add_item(UIStrings.TH_LOG_EMPTY)
+		_log_list.set_item_metadata(0, "")
+		_log_list.disabled = true
+	else:
+		_log_list.disabled = false
+		for entry in logs:
+			_log_list.add_item(str(entry.get("name", "")))
+			_log_list.set_item_metadata(_log_list.item_count - 1, str(entry.get("path", "")))
+			if str(entry.get("path", "")) == previous:
+				_log_list.select(_log_list.item_count - 1)
+	_refresh_log_panel()
+
+
+func _selected_log_path() -> String:
+	if _log_list == null or _log_list.disabled or _log_list.selected < 0 or _log_list.item_count == 0:
+		return ""
+	return str(_log_list.get_item_metadata(_log_list.selected))
+
+
+func _on_log_open_pressed() -> void:
+	var path := _selected_log_path()
+	if not path.is_empty():
+		open_log(path)
+
+
+## CSV ログを読み込んでログ表示にする。読めなければ false。
+func open_log(path: String) -> bool:
+	var readings := LogReplay.load_csv(path)
+	if readings.size() < 2:
+		_show_message(UIStrings.TH_LOG_LOAD_FAILED)
+		return false
+	_log_path = path
+	_log_readings = readings
+	_log_columns = LogReplay.axes_in(path)
+	_log_selection = Vector2(-1.0, -1.0)
+	_log_markers.clear()
+	_set_log_mode(true)
+	_show_message(UIStrings.TH_LOG_OPENED % path.get_file())
+	return true
+
+
+func _set_log_mode(enabled: bool) -> void:
+	_log_mode = enabled
+	if not enabled:
+		_log_readings = []
+		_log_markers.clear()
+		_log_selection = Vector2(-1.0, -1.0)
+	for axis in _plot_views.keys():
+		var view: WaveformView = _plot_views[axis]
+		view.selectable = enabled
+		view.clear_selection()
+		view.set_markers([])
+		view.set_spans([])
+		if enabled:
+			view.capacity = 0
+		_plot_states[axis].modulate.a = 0.0
+	_log_series_dirty = enabled
+	_log_detect_dirty = enabled
+	_log_banner.visible = enabled
+	_update_controls()
+
+
+## ログ表示: 波形（平滑化つき）とログの判定結果を必要なときだけ描き直す。
+func _update_log_views() -> void:
+	if _log_series_dirty:
+		_log_series_dirty = false
+		_refresh_log_series()
+	var now := Time.get_ticks_msec()
+	if _log_detect_dirty and now - _log_last_detect_tick >= LOG_DETECT_INTERVAL_MS:
+		_log_detect_dirty = false
+		_log_last_detect_tick = now
+		_run_log_detection()
+
+
+## ログ全体を軸ごとの波形にする。表示にも判定と同じ平滑化（AxisFilter）をかける。
+func _refresh_log_series() -> void:
+	var filter := AxisFilter.new(_smoothing)
+	var count := _log_readings.size()
+	for axis in _axes:
+		var view: WaveformView = _plot_views.get(axis)
+		if view == null:
+			continue
+		var data := PackedFloat32Array()
+		data.resize(count)
+		var lo := INF
+		var hi := -INF
+		for i in count:
+			var v := filter.push(axis, SensorAxis.value_of(_log_readings[i], axis))
+			data[i] = v
+			lo = minf(lo, v)
+			hi = maxf(hi, v)
+		view.capacity = 0
+		view.set_series([{"color": SensorAxis.color(axis), "data": data, "width": 1.4}])
+		_plot_values[axis].text = UIStrings.TH_LOG_RANGE % [_fmt(axis, lo), _fmt(axis, hi, true)]
+
+
+## 今のルール・組み合わせ・平滑化で、ログを最初から ThresholdDetector に流し直す。
+func _run_log_detection() -> void:
+	var rules: Array = []
+	for axis in _axes:
+		rules.append(_rules[axis])
+	_log_detector.configure(rules, _combine, _smoothing)
+	_log_markers.clear()
+	for i in _log_readings.size():
+		if _log_detector.feed(_log_readings[i]):
+			_log_markers.append(i)
+
+	var denom := float(maxi(_log_readings.size() - 1, 1))
+	var markers: Array = []
+	for index in _log_markers:
+		markers.append({"x": float(index) / denom, "color": COLOR_MARKER})
+	for axis in _axes:
+		var view: WaveformView = _plot_views.get(axis)
+		if view != null:
+			view.set_markers(markers)
+	_refresh_log_panel()
+
+
+func _on_log_selection_changed(x0: float, x1: float) -> void:
+	_log_selection = Vector2(x0, x1)
+	for axis in _plot_views.keys():
+		_plot_views[axis].set_selection(x0, x1)
+	_refresh_log_panel()
+
+
+## 選択範囲のサンプル番号 [開始, 終了)。選択なしならログ全体。
+func _log_range() -> Vector2i:
+	var count := _log_readings.size()
+	if _log_selection.x < 0.0:
+		return Vector2i(0, count)
+	var last := float(maxi(count - 1, 1))
+	return Vector2i(int(roundf(_log_selection.x * last)), mini(int(roundf(_log_selection.y * last)) + 1, count))
+
+
+## 秒表示用: ログ先頭からの経過秒。
+func _log_seconds(index: int) -> float:
+	if _log_readings.is_empty():
+		return 0.0
+	return float(_log_readings[index].timestamp_ms - _log_readings[0].timestamp_ms) / 1000.0
+
+
+## そのログで再現できない軸。合成値は元の3軸の列があれば再現できる（LogReplay は合成列を読まない）。
+func _log_missing_axes(axes: Array) -> Array[int]:
+	var missing: Array[int] = []
+	for axis in axes:
+		var needed: Array = [axis]
+		if axis == SensorAxis.Id.ACCEL_MAG:
+			needed = [SensorAxis.Id.AX, SensorAxis.Id.AY, SensorAxis.Id.AZ]
+		elif axis == SensorAxis.Id.GYRO_MAG:
+			needed = [SensorAxis.Id.GX, SensorAxis.Id.GY, SensorAxis.Id.GZ]
+		for column in needed:
+			if column not in _log_columns:
+				missing.append(axis)
+				break
+	return missing
+
+
+func _refresh_log_panel() -> void:
+	if _log_info == null:
+		return
+	_log_open_button.disabled = _selected_log_path().is_empty()
+	var idle := _analyzer.phase() == ThresholdAnalyzer.Phase.IDLE
+	_log_import_baseline.disabled = not _log_mode or not idle
+	_log_import_trial.disabled = not _log_mode or not idle
+	if not _log_mode:
+		_log_info.text = UIStrings.TH_LOG_NOT_OPEN
+		_log_warning.visible = false
+		_log_count.visible = false
+		_log_times.visible = false
+		_log_import_baseline.text = UIStrings.TH_LOG_IMPORT_BASELINE
+		_log_import_trial.text = UIStrings.TH_LOG_IMPORT_TRIAL
+		return
+
+	var count := _log_readings.size()
+	var columns := PackedStringArray()
+	for axis in _log_columns:
+		columns.append(SensorAxis.short_label(axis))
+	_log_info.text = UIStrings.TH_LOG_INFO % [_log_path.get_file(), _log_seconds(count - 1), count, ", ".join(columns)]
+	_log_banner_label.text = UIStrings.TH_LOG_BANNER % _log_path.get_file()
+
+	# 有効なルールの軸のうち、このログに列が無いもの
+	var enabled_axes: Array = []
+	for axis in _axes:
+		if _rules[axis].enabled:
+			enabled_axes.append(axis)
+	var missing := _log_missing_axes(enabled_axes)
+	_log_warning.visible = not missing.is_empty()
+	if not missing.is_empty():
+		var names := PackedStringArray()
+		var has_magnitude := false
+		for axis in missing:
+			names.append(SensorAxis.label(axis))
+			has_magnitude = has_magnitude or SensorAxis.is_magnitude(axis)
+		_log_warning.text = UIStrings.TH_LOG_MISSING % ", ".join(names)
+		if has_magnitude:
+			_log_warning.text += UIStrings.TH_LOG_MISSING_MAG_HINT
+
+	_log_count.visible = true
+	_log_count.text = UIStrings.TH_LOG_COUNT % _log_markers.size()
+	_log_times.visible = true
+	if _log_markers.is_empty():
+		_log_times.text = UIStrings.TH_LOG_NO_FIRE
+	else:
+		var times := PackedStringArray()
+		for i in mini(_log_markers.size(), LOG_MAX_LISTED_FIRES):
+			times.append("%.2f s" % _log_seconds(_log_markers[i]))
+		var text := UIStrings.TH_LOG_FIRES % ", ".join(times)
+		if _log_markers.size() > LOG_MAX_LISTED_FIRES:
+			text += UIStrings.TH_LOG_FIRES_MORE % (_log_markers.size() - LOG_MAX_LISTED_FIRES)
+		_log_times.text = text
+
+	var selected := _log_selection.x >= 0.0
+	_log_import_baseline.text = UIStrings.TH_LOG_IMPORT_BASELINE_SEL if selected else UIStrings.TH_LOG_IMPORT_BASELINE
+	_log_import_trial.text = UIStrings.TH_LOG_IMPORT_TRIAL_SEL if selected else UIStrings.TH_LOG_IMPORT_TRIAL
+	if selected:
+		var r := _log_range()
+		_log_info.text += "\n" + UIStrings.TH_LOG_SELECTION % [_log_seconds(r.x), _log_seconds(r.y - 1), r.y - r.x]
+
+
+## ログ（選択範囲。無ければ全体）を静止測定または試行として ThresholdAnalyzer に取り込む。
+## 集計は Analyzer に任せる（画面側では計算しない）。
+func _import_log(as_baseline: bool) -> void:
+	if not _log_mode or _analyzer.phase() != ThresholdAnalyzer.Phase.IDLE:
+		return
+	var missing := _log_missing_axes(_axes)
+	if not missing.is_empty():
+		var names := PackedStringArray()
+		for axis in missing:
+			names.append(SensorAxis.label(axis))
+		_show_message(UIStrings.TH_LOG_IMPORT_MISSING % ", ".join(names))
+		return
+	var r := _log_range()
+	if r.y - r.x < 2:
+		_show_message(UIStrings.TH_LOG_IMPORT_TOO_SHORT)
+		return
+	_importing = true
+	if as_baseline:
+		_analyzer.start_baseline(LOG_BASELINE_FOREVER_MS)
+	else:
+		_analyzer.start_trial(0)
+	for i in range(r.x, r.y):
+		_analyzer.feed(_log_readings[i])
+	_analyzer.stop()
+	_importing = false
+	_update_controls()
+	_show_message((UIStrings.TH_LOG_IMPORTED_BASELINE if as_baseline else UIStrings.TH_LOG_IMPORTED_TRIAL)
+			% [_log_seconds(r.x), _log_seconds(r.y - 1)])
+
+
 # ================================================================ 共通
 
 func _update_controls() -> void:
@@ -1475,7 +1908,9 @@ func _update_controls() -> void:
 		return
 	var has_device := not _selected_id.is_empty()
 	var phase := _analyzer.phase()
-	_hint.visible = not has_device
+	_hint.visible = not has_device and not _log_mode
+	_hint.text = UIStrings.TH_HINT_DEVICE_LOST if not _lost_device_id.is_empty() else UIStrings.HINT_NO_DEVICE
+	_refresh_log_panel()
 	_baseline_button.disabled = not has_device or phase != ThresholdAnalyzer.Phase.IDLE
 	_baseline_button.text = (UIStrings.TH_BASELINE_RUNNING if phase == ThresholdAnalyzer.Phase.BASELINE
 			else UIStrings.TH_BASELINE_START)

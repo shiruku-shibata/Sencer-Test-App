@@ -41,6 +41,38 @@ const LABEL_MOVING_AVERAGE := "移動平均"
 const HINT_NO_DEVICE := "接続中のデバイスがありません。「デバイス管理」から接続してください。"
 const HINT_RENAME := "ニックネームを入力してEnterで保存"
 
+# ---------------------------------------------------------------- 全体（サイドバー・ステータスバー）
+
+const TOOLTIP_HELP := "使い方を開く"
+const STATUS_DEVICES := "接続: %d 台"
+const STATUS_RATE := "受信: %.0f Hz"
+const STATUS_RECORDING := "記録中 %.1f s（%s）"
+const STATUS_NOT_RECORDING := "記録: 停止中"
+
+# ---------------------------------------------------------------- デバイス管理（S1）
+
+const DEV_SCANNING := "スキャン中…"
+const DEV_CONNECTING := "接続処理中…"
+const DEV_ERROR_SUFFIX := "（エラー）"
+const DEV_CANCEL := "中止"
+const DEV_BLE_RESTART := "ブリッジ再起動"
+const DEV_BLE_RESTART_TIP := "BLEブリッジを起動し直します（bleak を入れた後や、調子が悪いとき）"
+const DEV_BLE_MANUAL := "手動起動で接続"
+const DEV_BLE_MANUAL_TIP := "アプリからブリッジを起動せず、ターミナルで起動したブリッジにつなぎます（macOS で Bluetooth 権限のエラーが出るとき）"
+const DEV_BLE_MANUAL_HINT := "ターミナルで次のコマンドを実行してください（実行したままにしておきます）:"
+const DEV_COPY := "コピー"
+const DEV_COPIED := "コピーしました"
+const DEV_BLE_NOT_READY := "BLE ブリッジの準備ができていません"
+const DEV_LABEL_DEVICE_NAME := "機器名"
+const DEV_LABEL_RSSI := "電波"
+
+# ---------------------------------------------------------------- ログ管理（S3）
+
+const LOGS_SAVE_DIR := "保存先: %s"
+const LOGS_COL_FILE := "ファイル名"
+const LOGS_COL_SIZE := "サイズ"
+const LOGS_EMPTY := "記録されたログはまだありません。"
+
 # ---------------------------------------------------------------- 軸選択
 
 const AXIS_GROUP_ACCEL := "加速度"
@@ -59,6 +91,8 @@ const MONITOR_READOUT_MAX := "最大"
 const MONITOR_READOUT_MIN := "最小"
 const MONITOR_SAMPLE_COUNT := "サンプル数"
 const MONITOR_READOUT_NOTE := "最大・最小は表示中の時間窓の値"
+const MONITOR_DEVICE_LOCKED := "記録中は対象デバイスを変更できません"
+const MONITOR_RECORD_LOST := "記録中のデバイス（%s）が切断されたため、記録を停止しました（%d 行）"
 
 # ---------------------------------------------------------------- しきい値測定（S4）
 
@@ -154,13 +188,46 @@ const TH_MSG_DELETED := "削除しました: %s"
 const TH_MSG_JSON_COPIED := "JSONをクリップボードにコピーしました。"
 const TH_MSG_CODE_COPIED := "%s のコードをクリップボードにコピーしました。"
 
+const TH_STEP6_TITLE := "⑥ ログで判定テスト"
+const TH_STEP6_DESC := "ログ管理に保存した CSV に、今のしきい値で判定をかけます。しきい値を動かすとすぐ判定し直すので、実機なしでしきい値を詰められます。"
+const TH_LOG_OPEN := "表示"
+const TH_LOG_EMPTY := "（記録されたログなし）"
+const TH_LOG_NOT_OPEN := "ログを選んで「表示」を押すと、左の波形がログ全体の表示に切り替わります。"
+const TH_LOG_OPENED := "ログを表示しています: %s"
+const TH_LOG_LOAD_FAILED := "ログを読み込めませんでした（データ行が足りないか、形式が違います）。"
+const TH_LOG_BANNER := "ログ表示中: %s　（波形を左右にドラッグすると範囲を選べます）"
+const TH_LOG_BACK_TO_LIVE := "ライブ表示に戻る"
+const TH_LOG_INFO := "%s ・ %.1f 秒 ・ %d サンプル ・ 列: %s"
+const TH_LOG_SELECTION := "選択範囲: %.2f 〜 %.2f 秒（%d サンプル）"
+const TH_LOG_RANGE := "範囲 %s 〜 %s"
+const TH_LOG_MISSING := "このログには %s の列がありません（0 として判定されます）。"
+const TH_LOG_MISSING_MAG_HINT := "合成値には元の3軸（ax,ay,az / gx,gy,gz）の列が必要です（合成値の列だけでは再現できません）。"
+const TH_LOG_COUNT := "ログでの判定回数: %d"
+const TH_LOG_NO_FIRE := "このしきい値では、ログの中で一度も判定されませんでした。"
+const TH_LOG_FIRES := "判定位置: %s"
+const TH_LOG_FIRES_MORE := " ほか %d 件"
+const TH_LOG_IMPORT_HINT := "ログの一部を①静止測定・②試行として取り込めます（波形を左右にドラッグして範囲を選ぶ。選ばなければログ全体）。"
+const TH_LOG_IMPORT_BASELINE := "ログ全体を静止測定に"
+const TH_LOG_IMPORT_TRIAL := "ログ全体を試行に"
+const TH_LOG_IMPORT_BASELINE_SEL := "選択範囲を静止測定に"
+const TH_LOG_IMPORT_TRIAL_SEL := "選択範囲を試行に"
+const TH_LOG_IMPORT_MISSING := "取り込めません: このログには %s の列がありません。"
+const TH_LOG_IMPORT_TOO_SHORT := "範囲が短すぎます。もう少し広く選んでください。"
+const TH_LOG_IMPORTED_BASELINE := "ログの %.2f 〜 %.2f 秒を静止測定として取り込みました。"
+const TH_LOG_IMPORTED_TRIAL := "ログの %.2f 〜 %.2f 秒を試行として取り込みました。"
+
+const TH_MSG_TRIAL_DISCARDED := "サンプルが届かなかったため、この試行は記録しませんでした（デバイスの送信が止まっていないか確認してください）。"
+const TH_MSG_RULES_SKIPPED := "（同じ軸のルールが複数あったため %d 件を省略しました）"
+const TH_MSG_DEVICE_LOST := "計測中のデバイス（%s）が切断されました。測定結果が混ざらないよう、別のデバイスには自動で切り替えません。"
+const TH_HINT_DEVICE_LOST := "計測していたデバイスが切断されました。再接続すると自動で選び直します。別のデバイスで続けるときは「対象デバイス」から選んでください（測定結果は消えます）。"
+
 const TH_CONFIRM_TITLE := "確認"
 const BTN_OK := "OK"
 const BTN_CANCEL := "キャンセル"
 const TH_CONFIRM_AXES := "軸を変更すると、静止測定と試行の結果が消えます。よろしいですか？"
 const TH_CONFIRM_SMOOTHING := "平滑化を変更すると、静止測定と試行の結果が消えます（平滑化が違う値は比べられないため）。よろしいですか？"
 const TH_CONFIRM_DEVICE := "対象デバイスを変更すると、静止測定と試行の結果が消えます。よろしいですか？"
-const TH_CONFIRM_LOAD := "このプロファイルを読み込むと軸または平滑化が変わり、静止測定と試行の結果が消えます。よろしいですか？"
+const TH_CONFIRM_LOAD := "このプロファイルを読み込むと、今の静止測定と試行の結果は消え、プロファイルに保存されている結果（あれば）に置き換わります。よろしいですか？"
 const TH_CONFIRM_DELETE := "プロファイル「%s」を削除します。よろしいですか？"
 
 ## マニュアル（S5）の本文。BBCode で表示する。
@@ -242,6 +309,17 @@ M5-Sensor-MOCK1 / M5-Sensor-MOCK2 という BLE デバイスが見えるよう�
 	波形の赤い線をドラッグするか、数値を入力して微調整できます。
 6. [b]⑤ 保存と共有[/b]: 名前を付けて保存します（「プロファイルの共有」ページ）。
 
+[b]⑥ ログで判定テスト（実機なしで詰める）[/b]
+モニタリング画面で記録した CSV を使って、しきい値を机の上で調整できます。
+1. ⑥ でログを選んで [b]表示[/b] を押すと、左の波形がログ全体の表示に変わり、今のしきい値で判定した位置に赤い縦線が出ます。
+2. 波形の赤い線をドラッグしたり ④ の数値を変えたりすると、すぐに判定し直します。⑥ に判定回数と判定位置（秒）が出るので、
+	「振った回数」と合うようにしきい値を詰めます。ライブの判定回数（④）には影響しません。
+3. 波形を左右にドラッグして範囲を選ぶと、その範囲を [b]静止測定[/b] や [b]試行[/b] として取り込めます（選ばなければログ全体）。
+	取り込んだ結果は ① ② に入り、③ の推奨値にも使われます。
+4. [b]ライブ表示に戻る[/b] で通常の表示に戻ります。
+・判定に使う軸の列がログに無いと警告が出ます。合成値（|a| |g|）は元の3軸の列から計算するので、
+	記録するときは加速度なら aX aY aZ、ジャイロなら gX gY gZ を選んでおくと安心です。
+
 [b]判定品質の見方[/b]
 [color=#5cc77a]● 良好[/color]　静止中の揺れと動作のピークに十分な差があります。
 [color=#e8c547]● ぎりぎり[/color]　差が小さめ。見逃し・誤検出が起きやすいので、判定テストでよく確かめてください。
@@ -310,24 +388,27 @@ macOS では ~/Library/Application Support/Godot/app_userdata/Sensor Test App/th
 
 	"対応機種とファームウェア": """[b]対応機種とファームウェア[/b]
 
-M5Unified が対応する IMU（6軸センサー）付きの M5 製品で使えます。
-・M5StickC Plus2（主な対象）
-・M5StickC Plus
-・M5StickC
-・M5Stack Core2
-・M5Stack CoreS3
-・AtomS3
-・Atom Matrix
+IMU（6軸センサー）付きの M5 製品で使えます。機種は起動時にファームウェアが自動で判別します。
+書き込むときは、機種に合った「環境名（env）」を選びます。
+
+[table=3][cell padding=0,2,24,2][b]機種[/b][/cell][cell padding=0,2,24,2][b]環境名（-e）[/b][/cell][cell padding=0,2,0,2][b]一時停止/再開の操作[/b][/cell][cell padding=0,2,24,2]M5StickC Plus2（主な対象）[/cell][cell padding=0,2,24,2]m5stickc_plus2（既定）[/cell][cell padding=0,2,0,2]A ボタン（M5 ロゴ）[/cell][cell padding=0,2,24,2]M5StickC Plus[/cell][cell padding=0,2,24,2]m5stickc_plus[/cell][cell padding=0,2,0,2]A ボタン[/cell][cell padding=0,2,24,2]M5StickC（初代）[/cell][cell padding=0,2,24,2]m5stickc[/cell][cell padding=0,2,0,2]A ボタン[/cell][cell padding=0,2,24,2]M5Stack Core2[/cell][cell padding=0,2,24,2]m5stack_core2[/cell][cell padding=0,2,0,2]画面下の左タッチボタン[/cell][cell padding=0,2,24,2]M5Stack CoreS3[/cell][cell padding=0,2,24,2]m5stack_cores3[/cell][cell padding=0,2,0,2]画面をタップ[/cell][cell padding=0,2,24,2]M5Stack AtomS3[/cell][cell padding=0,2,24,2]m5stack_atoms3[/cell][cell padding=0,2,0,2]画面（ボタン）を押す[/cell][cell padding=0,2,24,2]ATOM Matrix[/cell][cell padding=0,2,24,2]m5stack_atom[/cell][cell padding=0,2,0,2]画面（ボタン）を押す[/cell][/table]
+
+[color=#e8c547]注意[/color]: [b]CoreS3 SE[/b] と [b]ATOM Lite[/b] は IMU を積んでいないため使えません。
+書き込むと画面に [b]IMU ERROR[/b]（ATOM は LED が赤）と出て、データの代わりに「# error=imu_not_found」という情報行を5秒おきに送ります。
 
 [b]ファームウェアの書き込み[/b]
 1. PC に PlatformIO（VS Code の拡張機能、または pio コマンド）を入れます。
-2. firmware/m5stick_sender を PlatformIO で開きます。
-3. 使う機種に合った環境（env）を選んで書き込みます。
-	[code]pio run -e <環境名> -t upload[/code]
-	機種ごとの環境名は firmware/m5stick_sender/platformio.ini を見てください。
-4. ファームウェアは有線（USBシリアル）でも BLE でも同じ形式のデータを送ります。
+2. USB ケーブル（データ通信対応のもの）でデバイスをつなぎます。
+3. ターミナルで firmware/m5stick_sender に移動し、機種の環境名を指定して書き込みます。
+	[code]pio run -e m5stickc_plus2 -t upload[/code]
+	複数台つないでいるときは、末尾に --upload-port /dev/cu.usbserial-XXXX（Windows は COM5 など）を付けます。
+4. 書き込むと、有線（USBシリアル）と BLE の両方でデータを送り始めます。
+	画面には BLE のデバイス名（M5-Sensor-XXXX）・送信状態・レートが出ます。
+・CoreS3 / AtomS3 で書き込みに失敗するときは、側面のリセットボタンを2〜3秒長押しして書き込みモードにしてから、もう一度実行します。
+・詳しい手順やトラブル対処は firmware/m5stick_sender/README.md にあります。
 
 [b]機種による違い[/b]
+・本体の操作（上の表）で送信を一時停止／再開できます。一時停止中は画面に PAUSED と出ます。
 ・軸の向きは機種によって違います。モニタリング画面で確かめてください。
 ・センサーには個体差があります。しきい値は、ゲームで使う機種（できれば同じ個体）で測るのがおすすめです。
 ・プロファイルには、測定に使ったデバイス名と受信レートが記録されます。""",
@@ -337,6 +418,12 @@ M5Unified が対応する IMU（6軸センサー）付きの M5 製品で使え�
 [b]有線でポートが出てこない[/b]
 macOSでは /dev/cu.* を使用します（/dev/tty.* ではありません）。
 USBケーブルが充電専用でないか、デバイスの電源が入っているかも確認してください。
+
+[b]デバイスの画面に IMU ERROR と出る（波形が流れない）[/b]
+IMU の無い機種（CoreS3 SE / ATOM Lite）か、書き込むときの環境名の選び間違いです。「対応機種とファームウェア」ページを見てください。
+
+[b]デバイスの画面に PAUSED と出る[/b]
+本体のボタン（機種による）で一時停止しています。もう一度押すと再開します。
 
 [b]BLE のデバイスが出てこない[/b]
 「BLEで接続する」ページの「うまくいかないとき」を見てください。
@@ -350,6 +437,10 @@ USBケーブルが充電専用でないか、デバイスの電源が入って�
 [b]判定品質がいつも「重なり」になる[/b]
 静止測定中に動いていないか、試行で動作をしっかり行えているかを確認してください。
 それでも重なる場合は、別の軸を試してください（「軸の選び方」ページ）。
+
+[b]測定中・記録中にデバイスが切断された[/b]
+しきい値測定: 途中の静止測定・試行は記録されません（それまでの結果は残ります）。別のデバイスには自動で切り替わらないので、再接続すると元のデバイスで続けられます。
+モニタリング: 記録はその時点で止まり、そこまでの CSV が保存されます。
 
 [b]1回の動作で何回も判定される[/b]
 ④ 判定テストの「ヒステリシス」か「不応期」を大きくしてください。""",
