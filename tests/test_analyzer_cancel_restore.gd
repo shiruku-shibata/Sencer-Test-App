@@ -84,6 +84,65 @@ func test_cancel_when_idle_does_nothing() -> void:
 	assert_true(a.has_baseline())
 
 
+# ------------------------------------------------------------ 受信の途切れ（PR #11 レビュー 中-2）
+
+## 静止測定中にデバイスが一時停止 → 60 秒後に再開しても、途切れる前の 0.2 秒分で「完了」しない。
+func test_gap_interrupts_baseline_instead_of_finishing_it() -> void:
+	var a := _measured([-1.0, 1.0], [[100.0]])
+	var before := a.baseline()
+	var signals: Array = []
+	a.baseline_finished.connect(func(_s: Dictionary) -> void: signals.append("baseline"))
+	a.phase_changed.connect(func(p: int) -> void: signals.append(p))
+	a.phase_interrupted.connect(func(p: int, gap: int) -> void: signals.append(["interrupted", p, gap]))
+	a.start_baseline(3000)
+	_feed_gz(a, range(20).map(func(_i: int) -> float: return 5.0))   # 0.2 秒ぶん
+	_t += 60000
+	_feed_gz(a, [5.0])
+	assert_eq(a.phase(), Phase.IDLE)
+	assert_eq(a.baseline(), before, "途切れる前の数サンプルで確定せず、以前の結果が残る")
+	assert_eq(signals, [Phase.BASELINE, Phase.IDLE, ["interrupted", Phase.BASELINE, 60010]],
+			"phase_changed(IDLE) の後に phase_interrupted。baseline_finished は出ない")
+
+
+func test_gap_interrupts_trial_without_recording_it() -> void:
+	var a := _measured([-1.0, 1.0], [[100.0]])
+	var signals: Array = []
+	a.trial_finished.connect(func(_i: int, _r: Dictionary) -> void: signals.append("finished"))
+	a.trial_discarded.connect(func() -> void: signals.append("discarded"))
+	a.phase_interrupted.connect(func(p: int, _gap: int) -> void: signals.append(p))
+	a.start_trial()
+	_feed_gz(a, [10.0, 200.0])
+	_t += ThresholdAnalyzer.DEFAULT_MAX_GAP_MS
+	_feed_gz(a, [10.0])
+	assert_eq(a.phase(), Phase.IDLE)
+	assert_eq(a.trial_count(), 1, "途切れた試行は記録しない")
+	assert_eq(signals, [Phase.TRIAL])
+
+
+func test_gap_shorter_than_limit_is_not_an_interruption() -> void:
+	var a := _analyzer()
+	var interrupted: Array = []
+	a.phase_interrupted.connect(func(p: int, _gap: int) -> void: interrupted.append(p))
+	a.start_baseline(1000)
+	_feed_gz(a, [1.0, 2.0])
+	_t += ThresholdAnalyzer.DEFAULT_MAX_GAP_MS - 20   # 間隔 490ms（< 500ms）
+	_feed_gz(a, range(60).map(func(_i: int) -> float: return 1.0))
+	assert_eq(interrupted, [])
+	assert_true(a.has_baseline(), "490ms の間は途切れとみなさず、時間で終わる")
+
+
+func test_gap_check_can_be_disabled_for_log_import() -> void:
+	var a := _analyzer()
+	a.max_gap_ms = 0
+	a.start_trial()
+	_feed_gz(a, [10.0])
+	_t += 60000
+	_feed_gz(a, [200.0])
+	a.stop()
+	assert_eq(a.trial_count(), 1)
+	assert_eq(int(a.trials()[0][GZ]["duration_ms"]), 60010)
+
+
 # ------------------------------------------------------------ restore_measurement
 
 func test_restore_roundtrip_gives_same_recommendation() -> void:

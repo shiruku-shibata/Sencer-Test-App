@@ -11,6 +11,9 @@ extends RefCounted
 ## 時間はすべて受信サンプルの timestamp_ms で測る（壁時計は使わない）。
 ## そのためログ再生（LogReplay）でも実機と同じ結果になる。
 ## 経過時間は「前のサンプルからの増分」を積算する。時刻が巻き戻ったサンプルは増分 0 として扱う。
+## 前のサンプルから max_gap_ms 以上空いたら「受信が途切れた」（デバイスの一時停止・電波の途切れ等）とみなし、
+## 実行中のフェーズを cancel() と同じく結果を確定せずに中止して phase_interrupted を出す。
+## （途切れをそのまま経過時間に足すと、途切れる前の数サンプルだけで静止測定が「完了」してしまうため）
 ##
 ## smoothing_window は各フェーズの開始時に適用され、判定器（ThresholdDetector）と同じ移動平均を通した値で統計を取る。
 ## 統計の標準偏差は母標準偏差（n で割る）。サンプル1件なら 0 になる。
@@ -25,6 +28,7 @@ const HYSTERESIS_MARGIN_RATIO := 0.25    ## ヒステリシス = 余裕 × 25%
 const HYSTERESIS_MAX_RATIO := 0.5        ## ヒステリシス <= (しきい値 − 静止平均) × 50%
 const DIRECTION_DOMINANCE := 2.0         ## 片側の振れが反対側の 2 倍以上ならその向き
 const MIN_BASELINE_SAMPLES := 2          ## これ未満の静止測定は insufficient
+const DEFAULT_MAX_GAP_MS := 500          ## サンプルの間がこれ以上空いたら途切れとみなす（10Hz の 5 倍）
 
 signal phase_changed(phase: int)
 ## axis(int) -> {mean, stddev, min, max, count}
@@ -33,8 +37,14 @@ signal baseline_finished(stats: Dictionary)
 signal trial_finished(index: int, result: Dictionary)
 ## 有効なサンプルが1件も無いまま試行が終わり、結果を破棄したとき（trial_finished は出ない）。
 signal trial_discarded()
+## 受信の途切れ（サンプルの間が max_gap_ms 以上）で実行中のフェーズを中止したとき。
+## phase は中止したフェーズ（BASELINE / TRIAL）、gap_ms は空いた時間。phase_changed(IDLE) の後に出る。
+## 結果は確定しない（baseline_finished / trial_finished / trial_discarded は出ない）。それまでの結果は残る。
+signal phase_interrupted(phase: int, gap_ms: int)
 
 var axes: Array[int] = []
+## 途切れとみなすサンプル間隔 [ms]。0 以下なら調べない（ログの取り込みなど、間が空いていてよいとき）。
+var max_gap_ms: int = DEFAULT_MAX_GAP_MS
 ## 移動平均の窓幅（1 = 平滑化なし）。次に開始するフェーズから適用される。
 var smoothing_window: int = 1:
 	set(value):
@@ -167,7 +177,13 @@ func feed(reading: SensorReading) -> void:
 		return
 	var ts := reading.timestamp_ms
 	if _sample_count > 0:
-		_elapsed_ms += maxi(0, ts - _last_ts)
+		var gap := ts - _last_ts
+		if max_gap_ms > 0 and gap >= max_gap_ms:
+			var interrupted := _phase
+			cancel()
+			phase_interrupted.emit(interrupted, gap)
+			return
+		_elapsed_ms += maxi(0, gap)
 	_last_ts = ts
 	if _duration_ms > 0 and _elapsed_ms >= _duration_ms:
 		stop()

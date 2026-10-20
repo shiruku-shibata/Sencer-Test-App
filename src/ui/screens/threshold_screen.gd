@@ -113,6 +113,8 @@ var _rule_rows: Dictionary = {}                ## axis -> {enabled, direction, t
 # ---- UI（①〜⑤）
 var _baseline_seconds: OptionButton
 var _baseline_button: Button
+var _baseline_cancel_button: Button
+var _trial_cancel_button: Button
 var _baseline_progress: ProgressBar
 var _baseline_grid: GridContainer
 var _baseline_empty: Label
@@ -160,6 +162,7 @@ func setup(manager: SensorManager, logger: LoggingService = null) -> void:
 	_analyzer.baseline_finished.connect(_on_baseline_finished)
 	_analyzer.trial_finished.connect(_on_trial_finished)
 	_analyzer.trial_discarded.connect(func() -> void: _show_message(UIStrings.TH_MSG_TRIAL_DISCARDED))
+	_analyzer.phase_interrupted.connect(_on_phase_interrupted)
 	_detector.fired.connect(_on_detector_fired)
 
 	if _logger != null:
@@ -348,6 +351,9 @@ func _build_step1() -> PanelContainer:
 	_baseline_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_baseline_button.pressed.connect(_on_baseline_pressed)
 	row.add_child(_baseline_button)
+	_baseline_cancel_button = _make_button(UIStrings.TH_PHASE_CANCEL, _on_cancel_phase_pressed)
+	_baseline_cancel_button.tooltip_text = UIStrings.TH_PHASE_CANCEL_TOOLTIP
+	row.add_child(_baseline_cancel_button)
 	box.add_child(row)
 
 	_baseline_progress = ProgressBar.new()
@@ -379,6 +385,9 @@ func _build_step2() -> PanelContainer:
 	_trial_button.custom_minimum_size.x = 170
 	_trial_button.pressed.connect(_toggle_trial)
 	row.add_child(_trial_button)
+	_trial_cancel_button = _make_button(UIStrings.TH_PHASE_CANCEL, _on_cancel_phase_pressed)
+	_trial_cancel_button.tooltip_text = UIStrings.TH_PHASE_CANCEL_TOOLTIP
+	row.add_child(_trial_cancel_button)
 	_trial_count = _make_label("")
 	_trial_count.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(_trial_count)
@@ -1240,6 +1249,32 @@ func _cancel_phase() -> void:
 		_analyzer.cancel()
 
 
+## ①②の「中止」ボタン: 実行中の静止測定・試行を結果を残さずに止める。
+func _on_cancel_phase_pressed() -> void:
+	var phase := _analyzer.phase()
+	if phase == ThresholdAnalyzer.Phase.IDLE:
+		return
+	_cancel_phase()
+	_show_message(UIStrings.TH_MSG_PHASE_CANCELLED % _phase_name(phase))
+	_after_phase_aborted(phase)
+
+
+## 受信が途切れて Analyzer が測定を中止したとき（デバイスの一時停止・電波の途切れなど）。
+func _on_phase_interrupted(phase: int, gap_ms: int) -> void:
+	_show_message(UIStrings.TH_MSG_PHASE_INTERRUPTED % [_phase_name(phase), gap_ms / 1000.0])
+	_after_phase_aborted(phase)
+
+
+func _after_phase_aborted(phase: int) -> void:
+	if phase == ThresholdAnalyzer.Phase.BASELINE:
+		_baseline_progress.value = 100.0 if _analyzer.has_baseline() else 0.0
+	_refresh_measurement()
+
+
+static func _phase_name(phase: int) -> String:
+	return UIStrings.TH_PHASE_BASELINE if phase == ThresholdAnalyzer.Phase.BASELINE else UIStrings.TH_PHASE_TRIAL
+
+
 func _has_measurement() -> bool:
 	return (not _analyzer.baseline().is_empty() or not _analyzer.trials().is_empty()
 			or _analyzer.phase() != ThresholdAnalyzer.Phase.IDLE)
@@ -1897,6 +1932,8 @@ func _import_log(as_baseline: bool) -> void:
 		_show_message(UIStrings.TH_LOG_IMPORT_TOO_SHORT)
 		return
 	_importing = true
+	# 記録したログは、途中で間が空いていても（一時停止して記録を続けた等）そのまま取り込む
+	_analyzer.max_gap_ms = 0
 	if as_baseline:
 		_analyzer.start_baseline(LOG_BASELINE_FOREVER_MS)
 	else:
@@ -1904,6 +1941,7 @@ func _import_log(as_baseline: bool) -> void:
 	for i in range(r.x, r.y):
 		_analyzer.feed(_log_readings[i])
 	_analyzer.stop()
+	_analyzer.max_gap_ms = ThresholdAnalyzer.DEFAULT_MAX_GAP_MS
 	_importing = false
 	_update_controls()
 	_show_message((UIStrings.TH_LOG_IMPORTED_BASELINE if as_baseline else UIStrings.TH_LOG_IMPORTED_TRIAL)
@@ -1926,6 +1964,8 @@ func _update_controls() -> void:
 	_baseline_seconds.disabled = phase != ThresholdAnalyzer.Phase.IDLE
 	_trial_button.disabled = not has_device or phase == ThresholdAnalyzer.Phase.BASELINE
 	_trial_button.text = UIStrings.TH_TRIAL_STOP if phase == ThresholdAnalyzer.Phase.TRIAL else UIStrings.TH_TRIAL_START
+	_baseline_cancel_button.disabled = phase != ThresholdAnalyzer.Phase.BASELINE
+	_trial_cancel_button.disabled = phase != ThresholdAnalyzer.Phase.TRIAL
 	var idle := phase == ThresholdAnalyzer.Phase.IDLE
 	_axis_selector.set_editable(idle, UIStrings.AXIS_LOCKED_MEASURING)
 	_smoothing_selector.disabled = not idle
