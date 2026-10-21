@@ -85,7 +85,7 @@
 
 ### 4.4 共有用 macOS アプリ
 
-`sh tools/package_macos.sh` で `build/SensorTestApp-macOS-0.2.0.zip`（約57MB）を作成しました。
+`sh tools/package_macos.sh` で `build/SensorTestApp-macOS-0.1.0.zip`（約57MB）を作成しました。
 
 - 中身: `Sensor Test App.app`（Apple シリコン / Intel 両対応、アドホック署名）、`ble_bridge/`、`はじめにお読みください.txt`、ライセンス一覧
 - 確認したこと:
