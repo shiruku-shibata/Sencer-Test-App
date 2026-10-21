@@ -84,3 +84,36 @@ func test_json_invalid() -> void:
 
 func test_json_with_cr() -> void:
 	assert_not_null(_parse("{\"ax\":1}\r"))
+
+
+# --- 入れ子の JSON（Beer-fw 形式） ---------------------------------------------
+
+func test_nested_accel_json_beer_fw() -> void:
+	var r := _parse('{"node":0,"mac":"00:4B:12:A2:4C:5D","seq":6,"t":4641,"accel":{"x":-0.0176,"y":0.0101,"z":0.9781}}')
+	assert_not_null(r, "Beer-fw ゲートウェイの行を読める")
+	assert_almost_eq(r.accel.x, -0.0176)
+	assert_almost_eq(r.accel.y, 0.0101)
+	assert_almost_eq(r.accel.z, 0.9781)
+	assert_eq(r.gyro, Vector3.ZERO, "ジャイロが無ければ 0")
+	assert_eq(r.source_node, 0)
+	assert_eq(r.source_mac, "00:4B:12:A2:4C:5D")
+
+
+func test_nested_json_with_extra_fields_and_gyro() -> void:
+	var r := _parse('{"node":1,"mac":"64:B7:08:85:64:54","seq":12,"rx":1,"accel":{"x":0.1,"y":0.2,"z":0.3},"gyro":{"x":10,"y":-20,"z":30},"drink":{"armed":0},"battery":{"level":1}}')
+	assert_not_null(r)
+	assert_almost_eq(r.accel.z, 0.3)
+	assert_almost_eq(r.gyro.y, -20.0)
+	assert_eq(r.source_node, 1)
+
+
+func test_nested_json_without_node_has_no_source() -> void:
+	var r := _parse('{"accel":{"x":0,"y":0,"z":1}}')
+	assert_not_null(r)
+	assert_eq(r.source_node, -1)
+
+
+func test_nested_json_rejects_bad_values() -> void:
+	assert_null(_parse('{"accel":{"x":"abc","y":0,"z":1}}'), "数値でない")
+	assert_null(_parse('{"accel":[0,0,1]}'), "accel がオブジェクトでない")
+	assert_null(_parse('{"node":1,"battery":{"level":1}}'), "加速度もジャイロも無い行")

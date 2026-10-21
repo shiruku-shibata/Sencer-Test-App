@@ -6,6 +6,9 @@ extends RefCounted
 ##   CSV : "ax,ay,az,gx,gy,gz"（7列目以降は無視）
 ##   JSON: {"ax":0.0,"ay":1.0,"az":0.0,"gx":0.0,"gy":0.0,"gz":0.0}
 ##         一部の軸だけ（例 {"gz":1.0}）でもよい。欠けた軸は 0。6軸のどれも無ければ変換しない。
+##   入れ子の JSON（Beer-fw 形式など）:
+##         {"node":1,"mac":"64:B7:…","accel":{"x":0.0,"y":0.0,"z":1.0},"gyro":{"x":…}}
+##         "accel" / "gyro" の x・y・z を読む（ジャイロが無ければ 0）。"node" があれば送信元ノード番号として残す。
 ##
 ## 変換できない行では null を返す（受信ノイズや起動時のログ行を無視するため）。
 ## "#" で始まる行はデバイスからの情報行（例 "# model=M5StickCPlus2 rate=100"）なので必ず null。
@@ -59,22 +62,48 @@ static func _parse_json(text: String, device_id: String) -> SensorReading:
 	for i in _JSON_KEYS.size():
 		if not d.has(_JSON_KEYS[i]):
 			continue
-		var raw: Variant = d[_JSON_KEYS[i]]
-		var f := 0.0
-		match typeof(raw):
-			TYPE_INT, TYPE_FLOAT:
-				f = float(raw)
-			TYPE_STRING:
-				if not String(raw).strip_edges().is_valid_float():
-					return null
-				f = String(raw).strip_edges().to_float()
-			_:
-				return null
-		if not is_finite(f):
+		var f: Variant = _to_number(d[_JSON_KEYS[i]])
+		if f == null:
 			return null
 		v[i] = f
 		found += 1
+	# 入れ子の形式: {"accel":{"x":…,"y":…,"z":…}, "gyro":{…}}
+	for group in [["accel", 0], ["gyro", 3]]:
+		if not d.has(group[0]):
+			continue
+		if typeof(d[group[0]]) != TYPE_DICTIONARY:
+			return null
+		var sub: Dictionary = d[group[0]]
+		for j in 3:
+			var key: String = ["x", "y", "z"][j]
+			if not sub.has(key):
+				continue
+			var f: Variant = _to_number(sub[key])
+			if f == null:
+				return null
+			v[int(group[1]) + j] = f
+			found += 1
 	if found == 0:
 		return null
-	return SensorReading.new(device_id, Time.get_ticks_msec(),
+	var reading := SensorReading.new(device_id, Time.get_ticks_msec(),
 			Vector3(v[0], v[1], v[2]), Vector3(v[3], v[4], v[5]))
+	if d.has("node") and typeof(d["node"]) in [TYPE_INT, TYPE_FLOAT] and float(d["node"]) >= 0.0:
+		reading.source_node = int(d["node"])
+		if typeof(d.get("mac")) == TYPE_STRING:
+			reading.source_mac = String(d["mac"])
+	return reading
+
+
+## JSON の値を有限の数値にする。数値でない・NaN / INF なら null。
+static func _to_number(raw: Variant) -> Variant:
+	var f := 0.0
+	match typeof(raw):
+		TYPE_INT, TYPE_FLOAT:
+			f = float(raw)
+		TYPE_STRING:
+			if not String(raw).strip_edges().is_valid_float():
+				return null
+			f = String(raw).strip_edges().to_float()
+		_:
+			return null
+	return f if is_finite(f) else null
