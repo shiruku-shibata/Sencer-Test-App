@@ -3,8 +3,9 @@ extends SensorProvider
 ## 外部アドオンを使わずに有線シリアル接続を行う Provider（macOS / Linux 専用）。
 ##
 ## 仕組み:
-##   1. OS標準の stty でポートのボーレート等を設定する
-##   2. cat でポートの内容を一時ファイルへ流し込む（別プロセス）
+##   1. ポートを1回だけ開いてシェルの標準入力にし、その上で stty でボーレート等を設定する
+##   2. 同じ標準入力のまま cat でポートの内容を一時ファイルへ流し込む（別プロセス）
+##   （macOS はポートを閉じると設定が 9600bps に戻るので、設定と読み取りを同じ開き方で続ける必要がある）
 ##   3. アプリ側は一時ファイルの増加分だけを読み取り、1行ずつ解析する
 ##
 ## GDExtensionのバイナリに依存しないため、配布物のライセンスと動作環境が単純になる。
@@ -21,7 +22,7 @@ class Stream:
 	var pid: int = -1
 	var stream_path: String = ""   ## 受信内容を書き出す一時ファイル（絶対パス）
 	var offset: int = 0            ## 読み取り済みのバイト数
-	var buffer: String = ""        ## 未完の行の持ち越し
+	var buffer := PackedByteArray() ## 未完の行の持ち越し（バイト列のまま。文字の途中で切れても壊れないように）
 
 
 var _streams: Dictionary = {}   ## device_id -> Stream
@@ -101,10 +102,12 @@ func open_device(device_id: String) -> bool:
 		return false
 	truncate.close()
 
-	# stty のオプションは macOS が -f、Linux が -F で異なるため両方試す
-	var command := "stty -f %s %d raw -echo 2>/dev/null || stty -F %s %d raw -echo; exec cat %s >> %s" % [
-		_quote(device_id), BAUDRATE, _quote(device_id), BAUDRATE,
-		_quote(device_id), _quote(stream_path)
+	# ポートを標準入力として1回だけ開き、stty（標準入力が対象。macOS / Linux 共通）と cat を同じ開き方で続ける。
+	# stty -f / -F でポートを別に開くと、macOS では閉じた時点で設定が初期値（9600bps）に戻り、
+	# cat が違う速度で読んで文字化けする。
+	#   clocal: モデム制御線を見ない（開くときに待たされない）/ -hupcl: 閉じるときに DTR を落とさない（不要なリセットを避ける）
+	var command := "exec < %s || exit 1; stty %d raw -echo clocal -hupcl; exec cat >> %s" % [
+		_quote(device_id), BAUDRATE, _quote(stream_path)
 	]
 	var pid := OS.create_process("/bin/sh", ["-c", command])
 	if pid <= 0:
@@ -197,16 +200,63 @@ func _read_new_lines(stream: Stream) -> PackedStringArray:
 		return lines
 
 	file.seek(stream.offset)
-	var chunk := file.get_buffer(length - stream.offset).get_string_from_utf8()
+	stream.buffer.append_array(file.get_buffer(length - stream.offset))
 	file.close()
 	stream.offset = length
 
-	stream.buffer += chunk
-	var parts := stream.buffer.split("\n")
-	for i in range(parts.size() - 1):
-		lines.append(parts[i].strip_edges())
-	stream.buffer = parts[parts.size() - 1]   # 未完の行は次回に持ち越す
+	# 改行（0x0A）ごとに切り、完全な行だけを文字にする。未完の行は次回に持ち越す
+	var start := 0
+	var newline := stream.buffer.find(10, start)
+	while newline >= 0:
+		var text := decode_line(stream.buffer.slice(start, newline))
+		if not text.is_empty():
+			lines.append(text)
+		start = newline + 1
+		newline = stream.buffer.find(10, start)
+	stream.buffer = stream.buffer.slice(start)
 	return lines
+
+
+## 1行分のバイト列を文字にする。ASCII だけならそのまま、正しい UTF-8 ならその文字に、
+## どちらでもない（起動直後のノイズや速度違いのゴミ）なら空文字（その行は捨てる）。
+## Godot の UTF-8 変換は壊れたバイト列で毎回エラーを表示するので、先に自前で確かめる。
+static func decode_line(bytes: PackedByteArray) -> String:
+	var ascii := true
+	for b in bytes:
+		if b >= 0x80:
+			ascii = false
+			break
+	if ascii:
+		return bytes.get_string_from_ascii().strip_edges()
+	if not _is_valid_utf8(bytes):
+		return ""
+	return bytes.get_string_from_utf8().strip_edges()
+
+
+static func _is_valid_utf8(bytes: PackedByteArray) -> bool:
+	var i := 0
+	var n := bytes.size()
+	while i < n:
+		var b := bytes[i]
+		var extra := 0
+		if b < 0x80:
+			extra = 0
+		elif b >= 0xC2 and b <= 0xDF:
+			extra = 1
+		elif b >= 0xE0 and b <= 0xEF:
+			extra = 2
+		elif b >= 0xF0 and b <= 0xF4:
+			extra = 3
+		else:
+			return false
+		if i + extra >= n and extra > 0:
+			return false
+		for k in range(1, extra + 1):
+			var c := bytes[i + k]
+			if c < 0x80 or c > 0xBF:
+				return false
+		i += extra + 1
+	return true
 
 
 ## シェルに渡すパスを安全に引用する。
