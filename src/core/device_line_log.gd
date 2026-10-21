@@ -17,6 +17,7 @@ var _entries: Dictionary = {}   ## device_id -> {"info": String, "reply": String
 
 ## 1行記録する。'#' で始まらない行は無視する。
 func record(device_id: String, line: String) -> void:
+	device_id = _key(device_id)
 	var text := line.replace("\r", "").replace(char(0xFEFF), "").strip_edges()
 	if not text.begins_with("#"):
 		return
@@ -39,21 +40,25 @@ func last_seq() -> int:
 
 
 func info(device_id: String) -> String:
+	device_id = _key(device_id)
 	return str(_entries.get(device_id, {}).get("info", ""))
 
 
 func reply(device_id: String) -> String:
+	device_id = _key(device_id)
 	return str(_entries.get(device_id, {}).get("reply", ""))
 
 
 ## 直近の行の履歴（古い順）。返り値を書き換えても内部には影響しない。
 func lines(device_id: String) -> Array:
+	device_id = _key(device_id)
 	if not _entries.has(device_id):
 		return []
 	return (_entries[device_id]["lines"] as Array).duplicate(true)
 
 
 func settings(device_id: String) -> Dictionary:
+	device_id = _key(device_id)
 	if not _entries.has(device_id):
 		return {}
 	return (_entries[device_id]["settings"] as Dictionary).duplicate()
@@ -61,6 +66,7 @@ func settings(device_id: String) -> Dictionary:
 
 ## そのデバイスについて覚えていることを消す（通し番号は戻さない）。
 func clear(device_id: String) -> void:
+	device_id = _key(device_id)
 	_entries.erase(device_id)
 
 
@@ -68,3 +74,9 @@ func _entry(device_id: String) -> Dictionary:
 	if not _entries.has(device_id):
 		_entries[device_id] = {"info": "", "reply": "", "lines": [], "settings": {}}
 	return _entries[device_id]
+
+
+## 中継先ノードの子デバイス（"<接続先>#node<番号>"）は、接続先（親）の記録を見る。
+## '#' 行は親の線から届くので、子からも同じ応答・情報が見えるようにする。
+static func _key(device_id: String) -> String:
+	return SensorManager.parent_id_of(device_id)

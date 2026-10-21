@@ -15,6 +15,9 @@ const SERIAL_MODE_AUTO := "auto"
 const SERIAL_MODE_ADDON := "addon"     ## シリアル通信アドオン（SerialSensorProvider）
 const SERIAL_MODE_PIPE := "pipe"       ## OS 標準の stty / cat（PipeSerialSensorProvider。macOS / Linux）
 const SERIAL_MODE_BRIDGE := "bridge"   ## BLEブリッジの pyserial（BridgeSerialSensorProvider。主に Windows）
+## 1本の線で複数のセンサーを中継する機器（Beer-fw のゲートウェイ等）のノードは、
+## 「<接続先のID>#node<番号>」という ID の子デバイスとして見せる。接続・切断・コマンドは接続先（親）へ送る。
+const NODE_SEPARATOR := "#node"
 
 var registry := DeviceRegistry.new()
 var providers: Array[SensorProvider] = []
@@ -134,28 +137,43 @@ func scan_all() -> void:
 
 
 func open_device(device_id: String) -> bool:
-	var provider := _provider_for(device_id)
+	var target := parent_id_of(device_id)
+	var provider := _provider_for(target)
 	if provider == null:
 		return false
-	var ok := provider.open_device(device_id)
+	var ok := provider.open_device(target)
 	if not ok:
-		push_warning("デバイスに接続できませんでした: %s" % device_id)
+		push_warning("デバイスに接続できませんでした: %s" % target)
 	return ok
 
 
+## 切断する。中継先のノード（子デバイス）を指定した場合は、接続先（親）ごと切断する。
 func close_device(device_id: String) -> void:
-	var provider := _provider_for(device_id)
+	var target := parent_id_of(device_id)
+	var provider := _provider_for(target)
 	if provider != null:
-		provider.close_device(device_id)
+		provider.close_device(target)
+
+
+## 中継先ノードの子デバイス ID。
+static func node_device_id(parent_id: String, node: int) -> String:
+	return "%s%s%d" % [parent_id, NODE_SEPARATOR, node]
+
+
+## 子デバイスなら接続先（親）の ID、そうでなければそのまま。
+static func parent_id_of(device_id: String) -> String:
+	var i := device_id.rfind(NODE_SEPARATOR)
+	return device_id.substr(0, i) if i > 0 else device_id
 
 
 ## デバイスへコマンドを1行送る（PAUSE / RESUME / RATE <Hz> / INFO）。
 ## 未対応の方式・未接続・送信失敗のときは false。
 func send_command(device_id: String, line: String) -> bool:
-	var provider := _provider_for(device_id)
+	var target := parent_id_of(device_id)
+	var provider := _provider_for(target)
 	if provider == null:
 		return false
-	return provider.send_command(device_id, line)
+	return provider.send_command(target, line)
 
 
 ## デバイスから届いた '#' 行（情報行・コマンド応答）の記録。デバイスが不明なら null。
@@ -182,8 +200,9 @@ func is_scanning() -> bool:
 
 ## そのデバイスが接続処理の途中か（BLE の接続待ちなど）。
 func is_connecting(device_id: String) -> bool:
-	var provider := _provider_for(device_id)
-	return provider != null and provider.is_connecting(device_id)
+	var target := parent_id_of(device_id)
+	var provider := _provider_for(target)
+	return provider != null and provider.is_connecting(target)
 
 
 ## 利用できない Provider の理由一覧（UIの注意書きに使う）。
@@ -196,13 +215,15 @@ func unavailable_notices() -> PackedStringArray:
 
 
 func _provider_for(device_id: String) -> SensorProvider:
-	var device := registry.get_device(device_id)
+	var device := registry.get_device(parent_id_of(device_id))
 	if device == null:
 		return null
 	return get_provider(device.mode)
 
 
 func _on_reading_received(reading: SensorReading) -> void:
+	if reading.source_node >= 0:
+		_route_to_node_device(reading)
 	var device := registry.get_device(reading.device_id)
 	if device != null:
 		device.last_received_ms = reading.timestamp_ms
@@ -211,7 +232,32 @@ func _on_reading_received(reading: SensorReading) -> void:
 	reading_received.emit(reading)
 
 
+## 中継された読み取り値を、ノードごとの子デバイスに付け替える（初めてのノードなら一覧に足す）。
+func _route_to_node_device(reading: SensorReading) -> void:
+	var parent := registry.get_device(reading.device_id)
+	var child_id := node_device_id(reading.device_id, reading.source_node)
+	var child := registry.get_device(child_id)
+	if child == null:
+		var label := "ノード %d" % reading.source_node
+		if not reading.source_mac.is_empty():
+			label += "（%s）" % reading.source_mac
+		child = SensorDevice.new(child_id, parent.mode if parent != null else SensorDevice.Mode.SERIAL, label)
+		registry.upsert(child)
+		child = registry.get_device(child_id)
+	if not child.connected:
+		child.connected = true
+		devices_changed.emit()
+		status_changed.emit()
+	reading.device_id = child_id
+
+
 func _on_connection_changed(device_id: String, connected: bool) -> void:
+	if not connected:
+		# 中継していたノードも、接続先が切れたら受信できない
+		for other in registry.all():
+			if other.id != device_id and parent_id_of(other.id) == device_id:
+				other.connected = false
+				other.rate_hz = 0.0
 	var device := registry.get_device(device_id)
 	if connected:
 		# 前回の接続で覚えた設定（一時停止中など）は、本体の再起動で変わっているかもしれないので忘れる

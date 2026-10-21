@@ -7,6 +7,10 @@ var device_id: String      ## 内部キー（有線: ポート名 / BLE: MACア�
 var timestamp_ms: int      ## 受信時刻（アプリ起動からの経過ミリ秒）
 var accel: Vector3         ## 加速度 [G]
 var gyro: Vector3          ## 角速度 [deg/s]
+## 1本の線で複数のセンサーを中継する機器（Beer-fw のゲートウェイ等）での送信元ノード番号。無ければ -1。
+## SensorManager がこれを見て、ノードごとに別のデバイスとして振り分ける。
+var source_node: int = -1
+var source_mac: String = ""   ## 送信元ノードの MAC アドレス（分かる場合のみ。表示名に使う）
 
 
 func _init(p_device_id: String = "", p_timestamp_ms: int = 0,
