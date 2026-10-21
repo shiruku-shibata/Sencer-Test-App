@@ -51,10 +51,29 @@ func close_device(device_id: String) -> void:
 	connection_changed.emit(device_id, false)
 
 
+## デバイスへ1行送る。アドオンに書き込みAPIが無い場合は false。
+func send_command(device_id: String, line: String) -> bool:
+	if not _adapters.has(device_id):
+		return false
+	var adapter: SerialPortAdapter = _adapters[device_id]
+	return adapter.write_line(line)
+
+
+## アプリ終了時: 開いているポートをすべて閉じる（シグナルは出さない）。
+func shutdown() -> void:
+	for device_id in _adapters.keys():
+		var adapter: SerialPortAdapter = _adapters[device_id]
+		adapter.close()
+	_adapters.clear()
+
+
 func poll(_delta: float) -> void:
 	for device_id in _adapters.keys():
 		var adapter: SerialPortAdapter = _adapters[device_id]
 		for line in adapter.read_lines():
+			if SensorDataParser.is_info_line(line):
+				_record_device_line(device_id, line)   # コマンド応答・情報行を覚える
+				continue
 			var reading := SensorDataParser.parse_line(line, device_id)
 			if reading != null:
 				reading_received.emit(reading)
